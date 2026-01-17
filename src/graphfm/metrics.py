@@ -56,6 +56,57 @@ def discrepancy_set(
     return sliced_wasserstein(a, b, projections=projections, rng=rng)
 
 
+def discrepancy_set_proportional(
+    token_sets_a: List[np.ndarray],
+    token_sets_b: List[np.ndarray],
+    total_samples: int,
+    projections: int = 50,
+    rng: np.random.Generator | None = None,
+) -> float:
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    def sample_tokens(token_sets: List[np.ndarray]) -> np.ndarray:
+        sizes = np.array([t.shape[0] for t in token_sets], dtype=np.float64)
+        probs = sizes / max(np.sum(sizes), 1.0)
+        picks = np.maximum((probs * total_samples).astype(int), 1)
+        picks = np.minimum(picks, sizes.astype(int))
+        chunks = []
+        for tokens, count in zip(token_sets, picks):
+            idx = rng.choice(tokens.shape[0], size=int(count), replace=False)
+            chunks.append(tokens[idx])
+        return np.concatenate(chunks, axis=0)
+
+    a = sample_tokens(token_sets_a)
+    b = sample_tokens(token_sets_b)
+    if a.shape[0] != b.shape[0]:
+        n = min(a.shape[0], b.shape[0])
+        idx_a = rng.choice(a.shape[0], size=n, replace=False)
+        idx_b = rng.choice(b.shape[0], size=n, replace=False)
+        a = a[idx_a]
+        b = b[idx_b]
+    return sliced_wasserstein(a, b, projections=projections, rng=rng)
+
+
+def discrepancy_set_all(
+    token_sets_a: List[np.ndarray],
+    token_sets_b: List[np.ndarray],
+    projections: int = 50,
+    rng: np.random.Generator | None = None,
+) -> float:
+    if rng is None:
+        rng = np.random.default_rng(0)
+    a = np.concatenate(token_sets_a, axis=0)
+    b = np.concatenate(token_sets_b, axis=0)
+    if a.shape[0] != b.shape[0]:
+        n = min(a.shape[0], b.shape[0])
+        idx_a = rng.choice(a.shape[0], size=n, replace=False)
+        idx_b = rng.choice(b.shape[0], size=n, replace=False)
+        a = a[idx_a]
+        b = b[idx_b]
+    return sliced_wasserstein(a, b, projections=projections, rng=rng)
+
+
 @dataclass(frozen=True)
 class EigengapStats:
     min_gap: float

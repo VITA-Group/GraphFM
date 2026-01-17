@@ -4,10 +4,10 @@ import argparse
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+# ROOT = Path(__file__).resolve().parents[1]
+# SRC = ROOT / "src"
+# if str(SRC) not in sys.path:
+#     sys.path.insert(0, str(SRC))
 
 from graphfm.experiments import ExperimentConfig, run_pe_sweep, run_size_shift
 from graphfm.pe import PEConfig
@@ -25,6 +25,11 @@ def main() -> None:
     parser.add_argument("--use_merging", action="store_true")
     parser.add_argument("--model", type=str, default="deepsets")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--discrepancy_mode",
+        choices=["uniform", "proportional", "all"],
+        default="uniform",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output)
@@ -40,6 +45,7 @@ def main() -> None:
             config=exp_cfg,
             use_merging=args.use_merging,
             lambda_mix=args.lambda_mix,
+            discrepancy_mode=args.discrepancy_mode,
         )
         return
 

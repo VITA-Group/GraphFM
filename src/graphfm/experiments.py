@@ -10,7 +10,12 @@ import numpy as np
 from .dataset import GraphSample, sample_with_allocation, sample_graphs, size_allocation_path
 from .graphon import make_fourier_graphons, perturb_graphon_coeffs
 from .merge import estimate_step_graphon, synthesize_from_step
-from .metrics import discrepancy_set, eigengap_stats
+from .metrics import (
+    discrepancy_set,
+    discrepancy_set_all,
+    discrepancy_set_proportional,
+    eigengap_stats,
+)
 from .pe import PEConfig, compute_pe
 from .sampling import normalize_shift_operator
 from .train import TrainConfig, evaluate_classifier, train_classifier
@@ -43,6 +48,7 @@ def run_size_shift(
     config: ExperimentConfig,
     use_merging: bool = False,
     lambda_mix: float = 0.0,
+    discrepancy_mode: str = "uniform",
 ) -> Dict:
     rng = np.random.default_rng(config.seed)
     graphons = make_fourier_graphons(
@@ -78,9 +84,24 @@ def run_size_shift(
 
     train_tokens = [s.tokens for s in train_samples]
     test_tokens = [s.tokens for s in test_samples]
-    discrepancy = discrepancy_set(
-        train_tokens, test_tokens, samples_per_graph=128, projections=50, rng=rng
-    )
+    if discrepancy_mode == "proportional":
+        discrepancy = discrepancy_set_proportional(
+            train_tokens,
+            test_tokens,
+            total_samples=128 * len(train_tokens),
+            projections=50,
+            rng=rng,
+        )
+    elif discrepancy_mode == "uniform":
+        discrepancy = discrepancy_set(
+            train_tokens, test_tokens, samples_per_graph=128, projections=50, rng=rng
+        )
+    elif discrepancy_mode == "all":
+        discrepancy = discrepancy_set_all(
+            train_tokens, test_tokens, projections=50, rng=rng
+        )
+    else:
+        raise ValueError(f"Unknown discrepancy_mode: {discrepancy_mode}")
     eig_stats = []
     for s in test_samples:
         evals = np.linalg.eigvalsh(s.delta)
@@ -91,6 +112,7 @@ def run_size_shift(
     result = {
         "test_error": test_error,
         "discrepancy_set": discrepancy,
+        "discrepancy_mode": discrepancy_mode,
         "eigengap_min": avg_min_gap,
         "eigengap_k": avg_gap_k,
         "lambda_mix": lambda_mix,
@@ -130,13 +152,31 @@ def run_pe_sweep(
             s.tokens = compute_pe(s.delta, pe_cfg)
         model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg)
         test_error = evaluate_classifier(model, test_samples, train_cfg)
-        discrepancy = discrepancy_set(
-            [s.tokens for s in train_samples],
-            [s.tokens for s in test_samples],
-            samples_per_graph=128,
-            projections=50,
-            rng=rng,
-        )
+        if discrepancy_mode == "proportional":
+            discrepancy = discrepancy_set_proportional(
+                [s.tokens for s in train_samples],
+                [s.tokens for s in test_samples],
+                total_samples=128 * len(train_samples),
+                projections=50,
+                rng=rng,
+            )
+        elif discrepancy_mode == "uniform":
+            discrepancy = discrepancy_set(
+                [s.tokens for s in train_samples],
+                [s.tokens for s in test_samples],
+                samples_per_graph=128,
+                projections=50,
+                rng=rng,
+            )
+        elif discrepancy_mode == "all":
+            discrepancy = discrepancy_set_all(
+                [s.tokens for s in train_samples],
+                [s.tokens for s in test_samples],
+                projections=50,
+                rng=rng,
+            )
+        else:
+            raise ValueError(f"Unknown discrepancy_mode: {discrepancy_mode}")
         eig_stats = []
         for s in test_samples:
             evals = np.linalg.eigvalsh(s.delta)
@@ -148,6 +188,7 @@ def run_pe_sweep(
                 "pe": pe_cfg.__dict__,
                 "test_error": test_error,
                 "discrepancy_set": discrepancy,
+                "discrepancy_mode": discrepancy_mode,
                 "eigengap_min": avg_min_gap,
                 "eigengap_k": avg_gap_k,
             }

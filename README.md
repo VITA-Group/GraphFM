@@ -4,14 +4,20 @@ This repo implements a minimal, runnable pipeline for the Section 4 experimental
 `Generalizable_GraphFM_theory.pdf`. The only deviation is the graphon-to-graph sampling rule:
 **we use the graphon values at i/n directly as a weighted adjacency matrix** rather than
 Bernoulli edge sampling.
-
-## Quickstart
-
+## Installation
+```bash
+uv sync
+```
+or
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
+```
+
+## Experiments
+```bash
 
 python scripts/run_experiment.py --experiment size_shift --output runs/size_shift --device cuda
 python scripts/run_experiment.py --experiment pe_sweep --output runs/pe_sweep --device cuda
@@ -28,9 +34,8 @@ python scripts/run_experiment.py --experiment pe_sweep --output runs/pe_sweep --
   eigengap proxies for stability diagnostics.
 - Data curation: fixed budget size-allocation path + optional graphon-guided merging.
 
-## Notes
+<!-- ## Notes
 
-- The code is intentionally minimal and research-friendly; it favors clarity over throughput.
-- The weighted adjacency matrix is always used (no Bernoulli sampling), per request.
+- The weighted adjacency matrix is used as graphon sampling instead of Bernoulli sampling listed in current pdf. -->
 
 

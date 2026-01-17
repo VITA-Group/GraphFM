@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Graph foundation model pipeline for Section 4 experiments"
 requires-python = ">=3.10"
 dependencies = [
+    "accelerate>=1.12.0",
     "matplotlib>=3.10.8",
+    "transformers>=4.57.5",
 ]
 
 [tool.setuptools]
