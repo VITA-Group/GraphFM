@@ -79,6 +79,7 @@ def run_size_shift(
         train_samples = train_samples + merged
 
     model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg)
+    train_error = evaluate_classifier(model, train_samples, train_cfg)
     test_samples = sample_graphs(graphons, config.test_sizes, config.per_class_test, pe_cfg, rng)
     test_error = evaluate_classifier(model, test_samples, train_cfg)
 
@@ -110,6 +111,7 @@ def run_size_shift(
     avg_gap_k = float(np.mean([e.gap_k for e in eig_stats]))
 
     result = {
+        "train_error": train_error,
         "test_error": test_error,
         "discrepancy_set": discrepancy,
         "discrepancy_mode": discrepancy_mode,
@@ -131,6 +133,7 @@ def run_pe_sweep(
     pe_grid: Sequence[PEConfig],
     train_cfg: TrainConfig,
     config: ExperimentConfig,
+    discrepancy_mode: str,
 ) -> Dict:
     rng = np.random.default_rng(config.seed)
     graphons = make_fourier_graphons(

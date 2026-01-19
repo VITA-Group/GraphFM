@@ -55,7 +55,7 @@ def main() -> None:
         ] + [
             PEConfig(kind="proj", k=k, m=m) for k in [8, 16, 32] for m in [8, 16, 32]
         ]
-        run_pe_sweep(out_dir=out_dir, pe_grid=pe_grid, train_cfg=train_cfg, config=exp_cfg)
+        run_pe_sweep(out_dir=out_dir, pe_grid=pe_grid, train_cfg=train_cfg, config=exp_cfg, discrepancy_mode=args.discrepancy_mode)
         return
 
 
