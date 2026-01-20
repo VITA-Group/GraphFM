@@ -1,0 +1,33 @@
+# Small scale config
+# Filename: budget100k_deepsets_h256_ep100_params200k_eig_k32.yaml
+
+experiment:
+  num_classes: 8
+  rho: 0.5
+  num_terms: 8
+  coeff_scale: 0.25
+  train_sizes: [128, 256, 512, 1024]
+  test_sizes: [128, 256, 512, 1024, 2048]
+  per_class_train: 10
+  per_class_test: 5
+  total_budget: 100000
+  lambda_mix: 0.0
+  seed: 0
+
+train:
+  epochs: 100
+  lr: 0.0005
+  weight_decay: 0.0001
+  batch_size: 1
+  model: deepsets
+  hidden: 256
+  degree_bins: 32
+  device: cuda
+
+pe:
+  kind: eig
+  k: 32
+  m: 32
+  spe_alpha: 10.0
+  spe_tau: 0.0
+  seed: 0

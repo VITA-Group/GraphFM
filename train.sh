@@ -1,4 +1,4 @@
-OUTPUT_DIR="runs/size_shift_all_merge"
+OUTPUT_DIR="runs/size_shift_all"
 DEVICES=(4 5 6 0 1 2 3)
 
 mkdir -p "${OUTPUT_DIR}"
@@ -13,8 +13,8 @@ for LAMBDA in $(seq 0 0.1 1); do
     --output "${OUTPUT_DIR}" \
     --lambda_mix "${LAMBDA}" \
     --device "${DEVICE}" \
+    --cache_dir ./.cache \
     --discrepancy_mode all \
-    --use_merging \
     > "${LOG}" 2>&1 &
   IDX=$((IDX + 1))
 done

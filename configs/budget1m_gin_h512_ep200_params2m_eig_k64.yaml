@@ -1,0 +1,33 @@
+# Medium scale config (approaching FM scale)
+# Filename: budget1m_gin_h512_ep200_params2m_eig_k64.yaml
+
+experiment:
+  num_classes: 16
+  rho: 0.5
+  num_terms: 10
+  coeff_scale: 0.3
+  train_sizes: [256, 512, 1024, 2048]
+  test_sizes: [256, 512, 1024, 2048, 4096]
+  per_class_train: 50
+  per_class_test: 20
+  total_budget: 1000000
+  lambda_mix: 0.0
+  seed: 0
+
+train:
+  epochs: 200
+  lr: 0.0003
+  weight_decay: 0.00005
+  batch_size: 1
+  model: gin
+  hidden: 512
+  degree_bins: 64
+  device: cuda
+
+pe:
+  kind: eig
+  k: 64
+  m: 64
+  spe_alpha: 10.0
+  spe_tau: 0.0
+  seed: 0

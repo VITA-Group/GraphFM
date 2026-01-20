@@ -1,4 +1,5 @@
 __all__ = [
+    "config",
     "graphon",
     "sampling",
     "pe",

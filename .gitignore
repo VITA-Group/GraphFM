@@ -8,3 +8,7 @@ wheels/
 runs/
 # Virtual environments
 .venv
+.cache/
+.claude
+CLAUDE.md
+*.png

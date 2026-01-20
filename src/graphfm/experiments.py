@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .dataset import GraphSample, sample_with_allocation, sample_graphs, size_allocation_path
+from .dataset import (
+    GraphSample,
+    apply_pe,
+    load_dataset,
+    sample_with_allocation_raw,
+    sample_graphs_raw,
+    save_dataset,
+    size_allocation_path,
+)
 from .graphon import make_fourier_graphons, perturb_graphon_coeffs
 from .merge import estimate_step_graphon, synthesize_from_step
 from .metrics import (
@@ -33,6 +42,7 @@ class ExperimentConfig:
     per_class_test: int = 2
     total_budget: int = 10_000
     seed: int = 0
+    lambda_mix: float = 0.0
 
 
 def _split_train_val(samples: List[GraphSample], val_frac: float, rng: np.random.Generator):
@@ -41,16 +51,50 @@ def _split_train_val(samples: List[GraphSample], val_frac: float, rng: np.random
     return samples[:cut], samples[cut:]
 
 
-def run_size_shift(
-    out_dir: Path,
-    pe_cfg: PEConfig,
-    train_cfg: TrainConfig,
+def _cache_key(params: Dict) -> str:
+    payload = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def _fmt_float(value: float) -> str:
+    return f"{value:.3f}".replace(".", "p")
+
+
+def _dataset_counts(config: ExperimentConfig) -> Tuple[int, int, int]:
+    allocation = size_allocation_path(
+        sizes_small=(config.train_sizes[0], config.train_sizes[1]),
+        sizes_large=(config.train_sizes[2], config.train_sizes[3]),
+        total_budget=config.total_budget,
+        lambda_mix=config.lambda_mix,
+    )
+    total_train = config.num_classes * sum(allocation.values())
+    train_cut = int(round(total_train * (1.0 - 0.2)))
+    val_count = total_train - train_cut
+    test_count = config.num_classes * len(config.test_sizes) * config.per_class_test
+    return train_cut, val_count, test_count
+
+
+def _dataset_cache_path(cache_dir: Path, config: ExperimentConfig) -> Path:
+    train_count, val_count, test_count = _dataset_counts(config)
+    total = train_count + val_count + test_count
+    test_ratio = test_count / max(total, 1)
+    params = {
+        "config": config.__dict__,
+    }
+    key = _cache_key(params)
+    name = (
+        f"dataset_ns{total}_lm{_fmt_float(config.lambda_mix)}_tr{_fmt_float(test_ratio)}"
+        f"_seed{config.seed}_{key}.npz"
+    )
+    return cache_dir / name
+
+
+
+
+def _generate_size_shift_samples(
     config: ExperimentConfig,
-    use_merging: bool = False,
-    lambda_mix: float = 0.0,
-    discrepancy_mode: str = "uniform",
-) -> Dict:
-    rng = np.random.default_rng(config.seed)
+    rng: np.random.Generator,
+) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample]]:
     graphons = make_fourier_graphons(
         num_classes=config.num_classes,
         rho=config.rho,
@@ -62,10 +106,84 @@ def run_size_shift(
         sizes_small=(config.train_sizes[0], config.train_sizes[1]),
         sizes_large=(config.train_sizes[2], config.train_sizes[3]),
         total_budget=config.total_budget,
-        lambda_mix=lambda_mix,
+        lambda_mix=config.lambda_mix,
     )
-    train_samples = sample_with_allocation(graphons, allocation, pe_cfg, rng)
+    train_samples = sample_with_allocation_raw(graphons, allocation, rng)
     train_samples, val_samples = _split_train_val(train_samples, 0.2, rng)
+    test_samples = sample_graphs_raw(
+        graphons, config.test_sizes, config.per_class_test, rng
+    )
+    return train_samples, val_samples, test_samples
+
+
+
+
+def generate_size_shift_dataset(
+    cache_dir: Path,
+    config: ExperimentConfig,
+    overwrite: bool = False,
+) -> Path:
+    cache_path = _dataset_cache_path(cache_dir, config)
+    if cache_path.exists() and not overwrite:
+        return cache_path
+    rng = np.random.default_rng(config.seed)
+    train_samples, val_samples, test_samples = _generate_size_shift_samples(
+        config=config,
+        rng=rng,
+    )
+    save_dataset(cache_path, train_samples, val_samples, test_samples)
+    return cache_path
+
+
+def generate_pe_sweep_dataset(
+    cache_dir: Path,
+    config: ExperimentConfig,
+    overwrite: bool = False,
+) -> Path:
+    return generate_datasets(cache_dir=cache_dir, config=config, overwrite=overwrite)
+
+
+def generate_datasets(
+    cache_dir: Path,
+    config: ExperimentConfig,
+    overwrite: bool = False,
+) -> Path:
+    cache_path = _dataset_cache_path(cache_dir, config)
+    if cache_path.exists() and not overwrite:
+        return cache_path
+    rng = np.random.default_rng(config.seed)
+    train_samples, val_samples, test_samples = _generate_size_shift_samples(
+        config=config,
+        rng=rng,
+    )
+    save_dataset(cache_path, train_samples, val_samples, test_samples)
+    return cache_path
+
+def run_size_shift(
+    out_dir: Path,
+    pe_cfg: PEConfig,
+    train_cfg: TrainConfig,
+    config: ExperimentConfig,
+    use_merging: bool = False,
+    discrepancy_mode: str = "proportional",
+    cache_dir: Optional[Path] = None,
+) -> Dict:
+    rng = np.random.default_rng(config.seed)
+    if cache_dir is not None:
+        cache_path = _dataset_cache_path(cache_dir, config)
+        if not cache_path.exists():
+            raise SystemExit(
+                f"Dataset cache not found: {cache_path}. Run scripts/generate_dataset.py first."
+            )
+        train_samples, val_samples, test_samples = load_dataset(cache_path)
+    else:
+        train_samples, val_samples, test_samples = _generate_size_shift_samples(
+            config=config,
+            rng=rng,
+        )
+    apply_pe(train_samples, pe_cfg)
+    apply_pe(val_samples, pe_cfg)
+    apply_pe(test_samples, pe_cfg)
 
     if use_merging:
         merged = []
@@ -80,7 +198,6 @@ def run_size_shift(
 
     model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg)
     train_error = evaluate_classifier(model, train_samples, train_cfg)
-    test_samples = sample_graphs(graphons, config.test_sizes, config.per_class_test, pe_cfg, rng)
     test_error = evaluate_classifier(model, test_samples, train_cfg)
 
     train_tokens = [s.tokens for s in train_samples]
@@ -117,11 +234,11 @@ def run_size_shift(
         "discrepancy_mode": discrepancy_mode,
         "eigengap_min": avg_min_gap,
         "eigengap_k": avg_gap_k,
-        "lambda_mix": lambda_mix,
+        "lambda_mix": config.lambda_mix,
         "use_merging": use_merging,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    lambda_tag = f"{lambda_mix:.2f}".replace(".", "p")
+    lambda_tag = f"{config.lambda_mix:.2f}".replace(".", "p")
     merge_tag = "_merge" if use_merging else ""
     out_name = f"size_shift_lambda_{lambda_tag}{merge_tag}.json"
     (out_dir / out_name).write_text(json.dumps(result, indent=2))
@@ -134,20 +251,21 @@ def run_pe_sweep(
     train_cfg: TrainConfig,
     config: ExperimentConfig,
     discrepancy_mode: str,
+    cache_dir: Optional[Path] = None,
 ) -> Dict:
     rng = np.random.default_rng(config.seed)
-    graphons = make_fourier_graphons(
-        num_classes=config.num_classes,
-        rho=config.rho,
-        num_terms=config.num_terms,
-        coeff_scale=config.coeff_scale,
-        rng=rng,
-    )
-    train_samples = sample_graphs(
-        graphons, config.train_sizes, config.per_class_train, pe_grid[0], rng
-    )
-    train_samples, val_samples = _split_train_val(train_samples, 0.2, rng)
-    test_samples = sample_graphs(graphons, config.test_sizes, config.per_class_test, pe_grid[0], rng)
+    if cache_dir is not None:
+        cache_path = _dataset_cache_path(cache_dir, config)
+        if not cache_path.exists():
+            raise SystemExit(
+                f"Dataset cache not found: {cache_path}. Run scripts/generate_dataset.py first."
+            )
+        train_samples, val_samples, test_samples = load_dataset(cache_path)
+    else:
+        train_samples, val_samples, test_samples = _generate_size_shift_samples(
+            config=config,
+            rng=rng,
+        )
 
     results = []
     for pe_cfg in pe_grid:
