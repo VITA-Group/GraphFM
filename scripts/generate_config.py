@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from graphfm.config import generate_config_filename, save_config
-from graphfm.experiments import ExperimentConfig
+from graphfm.experiments import DatasetConfig
 from graphfm.pe import PEConfig
 from graphfm.train import TrainConfig
 
@@ -63,7 +63,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    exp_cfg = ExperimentConfig(
+    exp_cfg = DatasetConfig(
         num_classes=args.num_classes,
         rho=args.rho,
         num_terms=args.num_terms,

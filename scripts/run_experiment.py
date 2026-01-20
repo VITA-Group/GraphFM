@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from graphfm.config import load_config, merge_config_with_args
-from graphfm.experiments import ExperimentConfig, run_pe_sweep, run_size_shift
+from graphfm.experiments import DatasetConfig, run_pe_sweep, run_size_shift
 from graphfm.pe import PEConfig
 from graphfm.train import TrainConfig
 
@@ -37,7 +37,7 @@ def main() -> None:
         )
     else:
         # Fallback to command-line args with defaults
-        exp_cfg = ExperimentConfig(
+        exp_cfg = DatasetConfig(
             lambda_mix=args.lambda_mix if args.lambda_mix is not None else 0.0
         )
         train_cfg = TrainConfig(

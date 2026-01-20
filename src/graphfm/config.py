@@ -6,7 +6,7 @@ from typing import Any, Dict, Tuple
 
 import yaml
 
-from .experiments import ExperimentConfig
+from .experiments import DatasetConfig
 from .pe import PEConfig
 from .train import TrainConfig
 
@@ -59,7 +59,7 @@ def estimate_model_params(
 
 
 def generate_config_filename(
-    exp_cfg: ExperimentConfig,
+    dataset_cfg: DatasetConfig,
     train_cfg: TrainConfig,
     pe_cfg: PEConfig,
     in_dim: int | None = None,
@@ -68,8 +68,8 @@ def generate_config_filename(
     if in_dim is None:
         in_dim = pe_cfg.k
 
-    params = estimate_model_params(train_cfg, in_dim, exp_cfg.num_classes)
-    budget_str = format_number(exp_cfg.total_budget)
+    params = estimate_model_params(train_cfg, in_dim, dataset_cfg.num_classes)
+    budget_str = format_number(dataset_cfg.total_budget)
     params_str = format_number(params)
 
     pe_str = f"{pe_cfg.kind}_k{pe_cfg.k}"
@@ -96,13 +96,13 @@ def _dataclass_to_dict(obj: Any) -> Dict[str, Any]:
 
 def save_config(
     path: Path,
-    exp_cfg: ExperimentConfig,
+    dataset_cfg: DatasetConfig,
     train_cfg: TrainConfig,
     pe_cfg: PEConfig,
 ) -> None:
     """Save configuration to YAML file."""
     config = {
-        "experiment": _dataclass_to_dict(exp_cfg),
+        "dataset": _dataclass_to_dict(dataset_cfg),
         "train": _dataclass_to_dict(train_cfg),
         "pe": _dataclass_to_dict(pe_cfg),
     }
@@ -111,38 +111,39 @@ def save_config(
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
-def load_config(path: Path) -> Tuple[ExperimentConfig, TrainConfig, PEConfig]:
+def load_config(path: Path) -> Tuple[DatasetConfig, TrainConfig, PEConfig]:
     """Load configuration from YAML file."""
     with open(path) as f:
         config = yaml.safe_load(f)
 
-    exp_dict = config.get("experiment", {})
-    if "train_sizes" in exp_dict:
-        exp_dict["train_sizes"] = tuple(exp_dict["train_sizes"])
-    if "test_sizes" in exp_dict:
-        exp_dict["test_sizes"] = tuple(exp_dict["test_sizes"])
+    # Support both "dataset" (new) and "experiment" (legacy) keys
+    dataset_dict = config.get("dataset", config.get("experiment", {}))
+    if "train_sizes" in dataset_dict:
+        dataset_dict["train_sizes"] = tuple(dataset_dict["train_sizes"])
+    if "test_sizes" in dataset_dict:
+        dataset_dict["test_sizes"] = tuple(dataset_dict["test_sizes"])
 
-    exp_cfg = ExperimentConfig(**exp_dict)
+    dataset_cfg = DatasetConfig(**dataset_dict)
     train_cfg = TrainConfig(**config.get("train", {}))
     pe_cfg = PEConfig(**config.get("pe", {}))
 
-    return exp_cfg, train_cfg, pe_cfg
+    return dataset_cfg, train_cfg, pe_cfg
 
 
 def merge_config_with_args(
-    exp_cfg: ExperimentConfig,
+    dataset_cfg: DatasetConfig,
     train_cfg: TrainConfig,
     pe_cfg: PEConfig,
     args: Any,
-) -> Tuple[ExperimentConfig, TrainConfig, PEConfig]:
+) -> Tuple[DatasetConfig, TrainConfig, PEConfig]:
     """Merge loaded config with command-line argument overrides."""
-    exp_dict = _dataclass_to_dict(exp_cfg)
+    dataset_dict = _dataclass_to_dict(dataset_cfg)
     train_dict = _dataclass_to_dict(train_cfg)
     pe_dict = _dataclass_to_dict(pe_cfg)
 
     # Override with non-None command-line args
     if hasattr(args, "lambda_mix") and args.lambda_mix is not None:
-        exp_dict["lambda_mix"] = args.lambda_mix
+        dataset_dict["lambda_mix"] = args.lambda_mix
     if hasattr(args, "device") and args.device is not None:
         train_dict["device"] = args.device
     if hasattr(args, "model") and args.model is not None:
@@ -155,7 +156,7 @@ def merge_config_with_args(
         pe_dict["m"] = args.m
 
     return (
-        ExperimentConfig(**exp_dict),
+        DatasetConfig(**dataset_dict),
         TrainConfig(**train_dict),
         PEConfig(**pe_dict),
     )

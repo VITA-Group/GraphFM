@@ -1,7 +1,7 @@
 # Large scale config (Foundation Model scale)
 # Filename: budget10m_gin_h768_ep500_params10m_proj_k128_m64.yaml
 
-experiment:
+dataset:
   num_classes: 32
   rho: 0.5
   num_terms: 15
@@ -10,7 +10,7 @@ experiment:
   test_sizes: [512, 1024, 2048, 4096, 8192, 16384]
   per_class_train: 100
   per_class_test: 50
-  total_budget: 10000000
+  total_budget: 10_000_000
   lambda_mix: 0.0
   seed: 0
 

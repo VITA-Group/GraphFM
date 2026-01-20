@@ -31,7 +31,7 @@ from .train import TrainConfig, evaluate_classifier, train_classifier
 
 
 @dataclass
-class ExperimentConfig:
+class DatasetConfig:
     num_classes: int = 4
     rho: float = 0.5
     num_terms: int = 5
@@ -60,7 +60,7 @@ def _fmt_float(value: float) -> str:
     return f"{value:.3f}".replace(".", "p")
 
 
-def _dataset_counts(config: ExperimentConfig) -> Tuple[int, int, int]:
+def _dataset_counts(config: DatasetConfig) -> Tuple[int, int, int]:
     allocation = size_allocation_path(
         sizes_small=(config.train_sizes[0], config.train_sizes[1]),
         sizes_large=(config.train_sizes[2], config.train_sizes[3]),
@@ -74,7 +74,7 @@ def _dataset_counts(config: ExperimentConfig) -> Tuple[int, int, int]:
     return train_cut, val_count, test_count
 
 
-def _dataset_cache_path(cache_dir: Path, config: ExperimentConfig) -> Path:
+def _dataset_cache_path(cache_dir: Path, config: DatasetConfig) -> Path:
     train_count, val_count, test_count = _dataset_counts(config)
     total = train_count + val_count + test_count
     test_ratio = test_count / max(total, 1)
@@ -92,7 +92,7 @@ def _dataset_cache_path(cache_dir: Path, config: ExperimentConfig) -> Path:
 
 
 def _generate_size_shift_samples(
-    config: ExperimentConfig,
+    config: DatasetConfig,
     rng: np.random.Generator,
 ) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample]]:
     graphons = make_fourier_graphons(
@@ -120,7 +120,7 @@ def _generate_size_shift_samples(
 
 def generate_size_shift_dataset(
     cache_dir: Path,
-    config: ExperimentConfig,
+    config: DatasetConfig,
     overwrite: bool = False,
 ) -> Path:
     cache_path = _dataset_cache_path(cache_dir, config)
@@ -137,7 +137,7 @@ def generate_size_shift_dataset(
 
 def generate_pe_sweep_dataset(
     cache_dir: Path,
-    config: ExperimentConfig,
+    config: DatasetConfig,
     overwrite: bool = False,
 ) -> Path:
     return generate_datasets(cache_dir=cache_dir, config=config, overwrite=overwrite)
@@ -145,7 +145,7 @@ def generate_pe_sweep_dataset(
 
 def generate_datasets(
     cache_dir: Path,
-    config: ExperimentConfig,
+    config: DatasetConfig,
     overwrite: bool = False,
 ) -> Path:
     cache_path = _dataset_cache_path(cache_dir, config)
@@ -163,7 +163,7 @@ def run_size_shift(
     out_dir: Path,
     pe_cfg: PEConfig,
     train_cfg: TrainConfig,
-    config: ExperimentConfig,
+    config: DatasetConfig,
     use_merging: bool = False,
     discrepancy_mode: str = "proportional",
     cache_dir: Optional[Path] = None,
@@ -249,7 +249,7 @@ def run_pe_sweep(
     out_dir: Path,
     pe_grid: Sequence[PEConfig],
     train_cfg: TrainConfig,
-    config: ExperimentConfig,
+    config: DatasetConfig,
     discrepancy_mode: str,
     cache_dir: Optional[Path] = None,
 ) -> Dict:

@@ -21,10 +21,13 @@ pip install -e .
 ## Quick Start
 
 ```bash
-# 1. Generate dataset cache
-python scripts/generate_dataset.py --cache_dir ./.cache --lambda_mix 0.3
+# 1. Generate dataset cache (using config file)
+python scripts/generate_dataset.py \
+  --config configs/budget10k_deepsets_h128_ep50_params50k_eig_k16.yaml \
+  --cache_dir ./.cache \
+  --lambda_mix 0.3
 
-# 2. Run experiment with config file
+# 2. Run experiment with same config
 python scripts/run_experiment.py \
   --config configs/budget10k_deepsets_h128_ep50_params50k_eig_k16.yaml \
   --experiment size_shift \
@@ -44,7 +47,7 @@ bash plot.sh runs/size_shift/
 Config files use YAML format with three sections:
 
 ```yaml
-experiment:
+dataset:
   num_classes: 4          # Number of graphon classes
   train_sizes: [64, 128, 256, 512]
   test_sizes: [64, 128, 256, 512, 768, 1024]
@@ -91,7 +94,20 @@ Filename format: `budget{N}_{model}_h{H}_ep{E}_params{P}_{pe}_k{K}[_m{M}].yaml`
 
 Datasets can be pre-generated and cached for faster experiment runs.
 
-### Single Dataset
+### Using Config File (Recommended)
+
+Use the same config file for dataset generation and experiments to ensure parameters match:
+
+```bash
+python scripts/generate_dataset.py \
+  --config configs/budget10k_deepsets_h128_ep50_params50k_eig_k16.yaml \
+  --cache_dir ./.cache \
+  --lambda_mix 0.3
+```
+
+The `--lambda_mix` flag overrides the config value if provided.
+
+### Using Defaults
 
 ```bash
 python scripts/generate_dataset.py \

@@ -1,7 +1,7 @@
 # Toy scale config (current default)
 # Filename: budget10k_deepsets_h128_ep50_params50k_eig_k16.yaml
 
-experiment:
+dataset:
   num_classes: 4
   rho: 0.5
   num_terms: 5
@@ -10,7 +10,7 @@ experiment:
   test_sizes: [64, 128, 256, 512, 768, 1024]
   per_class_train: 3
   per_class_test: 2
-  total_budget: 10000
+  total_budget: 10_000
   lambda_mix: 0.0
   seed: 0
 

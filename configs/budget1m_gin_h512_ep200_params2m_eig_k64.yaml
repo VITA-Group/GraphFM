@@ -1,7 +1,7 @@
 # Medium scale config (approaching FM scale)
 # Filename: budget1m_gin_h512_ep200_params2m_eig_k64.yaml
 
-experiment:
+dataset:
   num_classes: 16
   rho: 0.5
   num_terms: 10
