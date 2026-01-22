@@ -81,7 +81,7 @@ pe:
 python scripts/generate_config.py \
   --output_dir configs \
   --total_budget 1000000 \
-  --model gin \
+  --model deepsets \
   --hidden 512 \
   --epochs 200 \
   --pe_kind eig \

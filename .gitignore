@@ -12,3 +12,4 @@ runs/
 .claude
 CLAUDE.md
 *.png
+.vscode/

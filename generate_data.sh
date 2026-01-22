@@ -14,5 +14,6 @@ for lm in "${lambdas[@]}"; do
   python scripts/generate_dataset.py \
     --cache_dir "${cache_dir}" \
     --config configs/budget100k_deepsets_h256_ep100_params200k_eig_k32.yaml \
-    --lambda_mix "${lm}"
+    --lambda_mix "${lm}" \
+    --sampling_mode bin_value
 done

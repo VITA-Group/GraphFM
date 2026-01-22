@@ -19,7 +19,7 @@ train:
   lr: 0.0005
   weight_decay: 0.0001
   batch_size: 8
-  model: deepsets
+  model: gin
   hidden: 256
   degree_bins: 32
   device: cuda

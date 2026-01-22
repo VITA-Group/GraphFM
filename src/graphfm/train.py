@@ -251,3 +251,69 @@ def evaluate_classifier(
                 total += 1
 
     return 1.0 - float(correct) / max(total, 1)
+
+
+def evaluate_classifier_by_size(
+    model: nn.Module,
+    samples: List[GraphSample],
+    config: TrainConfig,
+    pe_cfg: Optional[PEConfig] = None,
+) -> Dict[int, float]:
+    """Evaluate a graph classifier and return error rate per graph size.
+
+    Args:
+        model: trained model
+        samples: samples to evaluate
+        config: training configuration
+        pe_cfg: PE configuration for on-the-fly computation (GPU accelerated).
+                If None, uses pre-computed tokens from samples.
+
+    Returns:
+        Dict mapping graph size -> error rate for that size
+    """
+    device = torch.device(config.device)
+    model.eval()
+
+    # Track correct/total per size
+    correct_by_size: Dict[int, int] = defaultdict(int)
+    total_by_size: Dict[int, int] = defaultdict(int)
+
+    with torch.no_grad():
+        if pe_cfg is not None:
+            # On-the-fly GPU batch PE computation
+            grouped = _group_by_size(samples, device)
+            for n, (deltas, adjs, labels) in grouped.items():
+                tokens = compute_pe_batch(deltas, pe_cfg)  # (B, n, k)
+                for i in range(tokens.shape[0]):
+                    if config.model == "gin":
+                        logits = model(tokens[i], adjs[i])
+                    else:
+                        logits = model(tokens[i])
+                    pred = int(torch.argmax(logits).item())
+                    correct_by_size[n] += int(pred == int(labels[i].item()))
+                    total_by_size[n] += 1
+        else:
+            # Pre-computed tokens (original behavior)
+            for sample in samples:
+                n = sample.delta.shape[0]
+                y = torch.tensor(sample.label, dtype=torch.long, device=device)
+                if config.model == "degree":
+                    feats = _degree_histogram(sample.adjacency, config.degree_bins)
+                    x = torch.tensor(feats, device=device)
+                    logits = model(x)
+                elif config.model == "gin":
+                    x = torch.tensor(sample.tokens, dtype=torch.float32, device=device)
+                    adj = torch.tensor(sample.adjacency, dtype=torch.float32, device=device)
+                    logits = model(x, adj)
+                else:
+                    x = torch.tensor(sample.tokens, dtype=torch.float32, device=device)
+                    logits = model(x)
+                pred = int(torch.argmax(logits).item())
+                correct_by_size[n] += int(pred == int(y.item()))
+                total_by_size[n] += 1
+
+    # Compute error rate per size
+    error_by_size = {}
+    for n in total_by_size:
+        error_by_size[n] = 1.0 - float(correct_by_size[n]) / max(total_by_size[n], 1)
+    return error_by_size

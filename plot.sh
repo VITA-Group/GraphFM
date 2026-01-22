@@ -7,8 +7,8 @@
 
 set -euo pipefail
 
-dir_a="${1:-runs/size_shift_all_merge/}"
-dir_b="${2:-}"
+dir_a="${1}"
+dir_b="${2}"
 # out="${3:-runs/size_shift_all_merge/size_shift_lambda_plot.png}"
 
 if [[ -n "${dir_b}" ]]; then

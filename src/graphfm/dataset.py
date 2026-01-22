@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -7,8 +9,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 from tqdm import tqdm
 
-from .graphon import FourierGraphon, Graphon, StepGraphon
-from .sampling import graphon_to_weighted_adjacency, normalize_shift_operator
+from .graphon import FourierGraphon, Graphon, StepGraphon, make_fourier_graphons
+from .sampling import (
+    SamplingMode,
+    graphon_to_weighted_adjacency,
+    normalize_shift_operator,
+)
 from .pe import PEConfig, compute_pe
 
 
@@ -18,6 +24,22 @@ class GraphSample:
     delta: np.ndarray
     label: int
     tokens: Optional[np.ndarray]
+
+
+@dataclass
+class DatasetConfig:
+    num_classes: int = 4
+    rho: float = 0.5
+    num_terms: int = 5
+    coeff_scale: float = 0.2
+    train_sizes: Sequence[int] = (64, 128, 256, 512)
+    test_sizes: Sequence[int] = (64, 128, 256, 512, 768, 1024)
+    per_class_train: int = 3
+    per_class_test: int = 2
+    total_budget: int = 10_000
+    seed: int = 0
+    lambda_mix: float = 0.0
+    sampling_mode: SamplingMode = "uniform_value"
 
 
 def apply_pe(samples: List[GraphSample], pe_cfg: PEConfig) -> None:
@@ -31,8 +53,9 @@ def sample_graphs(
     per_class: int,
     pe_cfg: PEConfig,
     rng: np.random.Generator,
+    sampling_mode: SamplingMode = "uniform_value",
 ) -> List[GraphSample]:
-    samples = sample_graphs_raw(graphons, sizes, per_class, rng)
+    samples = sample_graphs_raw(graphons, sizes, per_class, rng, sampling_mode=sampling_mode)
     apply_pe(samples, pe_cfg)
     return samples
 
@@ -43,6 +66,7 @@ def sample_graphs_raw(
     per_class: int,
     rng: np.random.Generator,
     show_progress: bool = True,
+    sampling_mode: SamplingMode = "uniform_value",
 ) -> List[GraphSample]:
     samples: List[GraphSample] = []
     total = len(graphons) * len(sizes) * per_class
@@ -50,7 +74,7 @@ def sample_graphs_raw(
     for c, w in enumerate(graphons):
         for n in sizes:
             for _ in range(per_class):
-                a = graphon_to_weighted_adjacency(w, n, rng=rng)
+                a = graphon_to_weighted_adjacency(w, n, rng=rng, sampling_mode=sampling_mode)
                 delta = normalize_shift_operator(a)
                 samples.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
                 pbar.update(1)
@@ -94,8 +118,9 @@ def sample_with_allocation(
     allocation: Dict[int, int],
     pe_cfg: PEConfig,
     rng: np.random.Generator,
+    sampling_mode: SamplingMode = "uniform_value",
 ) -> List[GraphSample]:
-    samples = sample_with_allocation_raw(graphons, allocation, rng)
+    samples = sample_with_allocation_raw(graphons, allocation, rng, sampling_mode=sampling_mode)
     apply_pe(samples, pe_cfg)
     return samples
 
@@ -105,6 +130,7 @@ def sample_with_allocation_raw(
     allocation: Dict[int, int],
     rng: np.random.Generator,
     show_progress: bool = True,
+    sampling_mode: SamplingMode = "uniform_value",
 ) -> List[GraphSample]:
     samples: List[GraphSample] = []
     total = len(graphons) * sum(allocation.values())
@@ -112,7 +138,7 @@ def sample_with_allocation_raw(
     for c, w in enumerate(graphons):
         for n, count in allocation.items():
             for _ in range(count):
-                a = graphon_to_weighted_adjacency(w, n, rng=rng)
+                a = graphon_to_weighted_adjacency(w, n, rng=rng, sampling_mode=sampling_mode)
                 delta = normalize_shift_operator(a)
                 samples.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
                 pbar.update(1)
@@ -219,3 +245,128 @@ def load_dataset(path: Path) -> Tuple[List[GraphSample], List[GraphSample], List
     val_samples = _unpack_samples(data, "val")
     test_samples = _unpack_samples(data, "test")
     return train_samples, val_samples, test_samples
+
+
+# --- Dataset generation functions (moved from experiments.py) ---
+
+
+def _split_train_val(samples: List[GraphSample], val_frac: float, rng: np.random.Generator):
+    rng.shuffle(samples)
+    cut = int(round(len(samples) * (1.0 - val_frac)))
+    return samples[:cut], samples[cut:]
+
+
+def _cache_key(params: Dict) -> str:
+    payload = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def _fmt_float(value: float) -> str:
+    return f"{value:.3f}".replace(".", "p")
+
+
+def _dataset_counts(config: DatasetConfig) -> Tuple[int, int, int]:
+    allocation = size_allocation_path(
+        sizes_small=(config.train_sizes[0], config.train_sizes[1]),
+        sizes_large=(config.train_sizes[2], config.train_sizes[3]),
+        total_budget=config.total_budget,
+        lambda_mix=config.lambda_mix,
+    )
+    total_train = config.num_classes * sum(allocation.values())
+    train_cut = int(round(total_train * (1.0 - 0.2)))
+    val_count = total_train - train_cut
+    test_count = config.num_classes * len(config.test_sizes) * config.per_class_test
+    return train_cut, val_count, test_count
+
+
+def _dataset_cache_path(cache_dir: Path, config: DatasetConfig) -> Path:
+    train_count, val_count, test_count = _dataset_counts(config)
+    total = train_count + val_count + test_count
+    test_ratio = test_count / max(total, 1)
+    params = {
+        "config": config.__dict__,
+    }
+    key = _cache_key(params)
+    name = (
+        f"dataset_ns{total}_lm{_fmt_float(config.lambda_mix)}_tr{_fmt_float(test_ratio)}"
+        f"_seed{config.seed}_{key}.npz"
+    )
+    return cache_dir / name
+
+
+def generate_samples(
+    config: DatasetConfig,
+    rng: np.random.Generator,
+) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample]]:
+    """Generate train/val/test samples from graphons.
+
+    This function was previously named _generate_size_shift_samples.
+    """
+    graphons = make_fourier_graphons(
+        num_classes=config.num_classes,
+        rho=config.rho,
+        num_terms=config.num_terms,
+        coeff_scale=config.coeff_scale,
+        rng=rng,
+    )
+    allocation = size_allocation_path(
+        sizes_small=(config.train_sizes[0], config.train_sizes[1]),
+        sizes_large=(config.train_sizes[2], config.train_sizes[3]),
+        total_budget=config.total_budget,
+        lambda_mix=config.lambda_mix,
+    )
+    train_samples = sample_with_allocation_raw(
+        graphons, allocation, rng, sampling_mode=config.sampling_mode
+    )
+    train_samples, val_samples = _split_train_val(train_samples, 0.2, rng)
+    test_samples = sample_graphs_raw(
+        graphons, config.test_sizes, config.per_class_test, rng,
+        sampling_mode=config.sampling_mode
+    )
+    return train_samples, val_samples, test_samples
+
+
+def generate_dataset(
+    cache_dir: Path,
+    config: DatasetConfig,
+    overwrite: bool = False,
+) -> Path:
+    """Generate and cache a dataset.
+
+    This function was previously named generate_size_shift_dataset.
+    """
+    cache_path = _dataset_cache_path(cache_dir, config)
+    if cache_path.exists() and not overwrite:
+        return cache_path
+    rng = np.random.default_rng(config.seed)
+    train_samples, val_samples, test_samples = generate_samples(
+        config=config,
+        rng=rng,
+    )
+    save_dataset(cache_path, train_samples, val_samples, test_samples)
+    return cache_path
+
+
+def generate_pe_sweep_dataset(
+    cache_dir: Path,
+    config: DatasetConfig,
+    overwrite: bool = False,
+) -> Path:
+    return generate_datasets(cache_dir=cache_dir, config=config, overwrite=overwrite)
+
+
+def generate_datasets(
+    cache_dir: Path,
+    config: DatasetConfig,
+    overwrite: bool = False,
+) -> Path:
+    cache_path = _dataset_cache_path(cache_dir, config)
+    if cache_path.exists() and not overwrite:
+        return cache_path
+    rng = np.random.default_rng(config.seed)
+    train_samples, val_samples, test_samples = generate_samples(
+        config=config,
+        rng=rng,
+    )
+    save_dataset(cache_path, train_samples, val_samples, test_samples)
+    return cache_path

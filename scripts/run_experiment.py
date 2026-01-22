@@ -4,7 +4,8 @@ import argparse
 from pathlib import Path
 
 from graphfm.config import load_config, merge_config_with_args
-from graphfm.experiments import DatasetConfig, run_pe_sweep, run_size_shift
+from graphfm.dataset import DatasetConfig
+from graphfm.experiments import run_pe_sweep, run_size_shift
 from graphfm.pe import PEConfig
 from graphfm.train import TrainConfig
 
@@ -18,6 +19,12 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=None)
     parser.add_argument("--m", type=int, default=None)
     parser.add_argument("--lambda_mix", type=float, default=None)
+    parser.add_argument(
+        "--sampling_mode",
+        choices=["uniform_value", "bin_value", "uniform_bernoulli"],
+        default="uniform_value",
+        help="Sampling mode for graph generation",
+    )
     parser.add_argument("--use_merging", action="store_true")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
@@ -38,7 +45,8 @@ def main() -> None:
     else:
         # Fallback to command-line args with defaults
         exp_cfg = DatasetConfig(
-            lambda_mix=args.lambda_mix if args.lambda_mix is not None else 0.0
+            lambda_mix=args.lambda_mix if args.lambda_mix is not None else 0.0,
+            sampling_mode=args.sampling_mode if args.sampling_mode is not None else "uniform_value",
         )
         train_cfg = TrainConfig(
             model=args.model if args.model is not None else "deepsets",

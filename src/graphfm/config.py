@@ -6,7 +6,7 @@ from typing import Any, Dict, Tuple
 
 import yaml
 
-from .experiments import DatasetConfig
+from .dataset import DatasetConfig
 from .pe import PEConfig
 from .train import TrainConfig
 
@@ -144,6 +144,8 @@ def merge_config_with_args(
     # Override with non-None command-line args
     if hasattr(args, "lambda_mix") and args.lambda_mix is not None:
         dataset_dict["lambda_mix"] = args.lambda_mix
+    if hasattr(args, "sampling_mode") and args.sampling_mode is not None:
+        dataset_dict["sampling_mode"] = args.sampling_mode
     if hasattr(args, "device") and args.device is not None:
         train_dict["device"] = args.device
     if hasattr(args, "model") and args.model is not None:

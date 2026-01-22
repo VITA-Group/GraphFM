@@ -1,55 +1,32 @@
 from __future__ import annotations
 
-import hashlib
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import torch
 
 from .dataset import (
+    DatasetConfig,
     GraphSample,
+    _dataset_cache_path,
+    generate_dataset,
+    generate_datasets,
+    generate_pe_sweep_dataset,
+    generate_samples,
     load_dataset,
-    sample_with_allocation_raw,
-    sample_graphs_raw,
-    save_dataset,
-    size_allocation_path,
 )
-from .graphon import make_fourier_graphons, perturb_graphon_coeffs
+from .graphon import perturb_graphon_coeffs
 from .merge import estimate_step_graphon, synthesize_from_step
 from .metrics import (
     discrepancy_set,
     discrepancy_set_all,
     discrepancy_set_proportional,
-    eigengap_stats,
 )
 from .pe import PEConfig, compute_pe_batch
 from .sampling import normalize_shift_operator
-from .train import TrainConfig, evaluate_classifier, train_classifier
-
-import torch
-
-
-@dataclass
-class DatasetConfig:
-    num_classes: int = 4
-    rho: float = 0.5
-    num_terms: int = 5
-    coeff_scale: float = 0.2
-    train_sizes: Sequence[int] = (64, 128, 256, 512)
-    test_sizes: Sequence[int] = (64, 128, 256, 512, 768, 1024)
-    per_class_train: int = 3
-    per_class_test: int = 2
-    total_budget: int = 10_000
-    seed: int = 0
-    lambda_mix: float = 0.0
-
-
-def _split_train_val(samples: List[GraphSample], val_frac: float, rng: np.random.Generator):
-    rng.shuffle(samples)
-    cut = int(round(len(samples) * (1.0 - val_frac)))
-    return samples[:cut], samples[cut:]
+from .train import TrainConfig, evaluate_classifier, evaluate_classifier_by_size, train_classifier
 
 
 def _compute_tokens_gpu(
@@ -91,113 +68,66 @@ def _compute_tokens_gpu(
     return tokens_out  # type: ignore
 
 
-def _cache_key(params: Dict) -> str:
-    payload = json.dumps(params, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+def _attach_tokens_to_samples(
+    samples: List[GraphSample],
+    pe_cfg: PEConfig,
+    device: str = "cuda",
+) -> None:
+    """Compute tokens once and attach to samples in-place."""
+    tokens_list = _compute_tokens_gpu(samples, pe_cfg, device)
+    for sample, tokens in zip(samples, tokens_list):
+        sample.tokens = tokens
 
 
-def _fmt_float(value: float) -> str:
-    return f"{value:.3f}".replace(".", "p")
+def _compute_eigengap_stats_gpu(
+    samples: List[GraphSample],
+    k: int,
+    device: str = "cuda",
+) -> Tuple[float, float]:
+    """Compute eigengap statistics using GPU batch processing.
 
+    Args:
+        samples: list of GraphSample
+        k: number of eigenvalues to consider for gaps
+        device: torch device
 
-def _dataset_counts(config: DatasetConfig) -> Tuple[int, int, int]:
-    allocation = size_allocation_path(
-        sizes_small=(config.train_sizes[0], config.train_sizes[1]),
-        sizes_large=(config.train_sizes[2], config.train_sizes[3]),
-        total_budget=config.total_budget,
-        lambda_mix=config.lambda_mix,
-    )
-    total_train = config.num_classes * sum(allocation.values())
-    train_cut = int(round(total_train * (1.0 - 0.2)))
-    val_count = total_train - train_cut
-    test_count = config.num_classes * len(config.test_sizes) * config.per_class_test
-    return train_cut, val_count, test_count
+    Returns:
+        (avg_min_gap, avg_gap_k) averaged over all samples
+    """
+    from collections import defaultdict
 
+    # Group by size
+    by_size: Dict[int, List[GraphSample]] = defaultdict(list)
+    for s in samples:
+        by_size[s.delta.shape[0]].append(s)
 
-def _dataset_cache_path(cache_dir: Path, config: DatasetConfig) -> Path:
-    train_count, val_count, test_count = _dataset_counts(config)
-    total = train_count + val_count + test_count
-    test_ratio = test_count / max(total, 1)
-    params = {
-        "config": config.__dict__,
-    }
-    key = _cache_key(params)
-    name = (
-        f"dataset_ns{total}_lm{_fmt_float(config.lambda_mix)}_tr{_fmt_float(test_ratio)}"
-        f"_seed{config.seed}_{key}.npz"
-    )
-    return cache_dir / name
+    all_min_gaps = []
+    all_gap_ks = []
+    dev = torch.device(device)
 
+    for n, group in by_size.items():
+        deltas = np.stack([s.delta for s in group])
+        deltas_t = torch.from_numpy(deltas).to(dev, dtype=torch.float32)
 
+        # Batch eigenvalue computation
+        evals = torch.linalg.eigvalsh(deltas_t)  # (B, n)
+        evals_sorted, _ = torch.sort(evals, dim=1)
+        gaps = torch.diff(evals_sorted, dim=1)  # (B, n-1)
 
+        k_eff = min(k, n - 1)
+        if k_eff > 0:
+            min_gaps = gaps[:, :k_eff].min(dim=1).values  # (B,)
+            gap_ks = gaps[:, k_eff - 1]  # (B,)
+            all_min_gaps.append(min_gaps.cpu().numpy())
+            all_gap_ks.append(gap_ks.cpu().numpy())
 
-def _generate_size_shift_samples(
-    config: DatasetConfig,
-    rng: np.random.Generator,
-) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample]]:
-    graphons = make_fourier_graphons(
-        num_classes=config.num_classes,
-        rho=config.rho,
-        num_terms=config.num_terms,
-        coeff_scale=config.coeff_scale,
-        rng=rng,
-    )
-    allocation = size_allocation_path(
-        sizes_small=(config.train_sizes[0], config.train_sizes[1]),
-        sizes_large=(config.train_sizes[2], config.train_sizes[3]),
-        total_budget=config.total_budget,
-        lambda_mix=config.lambda_mix,
-    )
-    train_samples = sample_with_allocation_raw(graphons, allocation, rng)
-    train_samples, val_samples = _split_train_val(train_samples, 0.2, rng)
-    test_samples = sample_graphs_raw(
-        graphons, config.test_sizes, config.per_class_test, rng
-    )
-    return train_samples, val_samples, test_samples
+    if not all_min_gaps:
+        return float("nan"), float("nan")
 
+    avg_min_gap = float(np.mean(np.concatenate(all_min_gaps)))
+    avg_gap_k = float(np.mean(np.concatenate(all_gap_ks)))
+    return avg_min_gap, avg_gap_k
 
-
-
-def generate_size_shift_dataset(
-    cache_dir: Path,
-    config: DatasetConfig,
-    overwrite: bool = False,
-) -> Path:
-    cache_path = _dataset_cache_path(cache_dir, config)
-    if cache_path.exists() and not overwrite:
-        return cache_path
-    rng = np.random.default_rng(config.seed)
-    train_samples, val_samples, test_samples = _generate_size_shift_samples(
-        config=config,
-        rng=rng,
-    )
-    save_dataset(cache_path, train_samples, val_samples, test_samples)
-    return cache_path
-
-
-def generate_pe_sweep_dataset(
-    cache_dir: Path,
-    config: DatasetConfig,
-    overwrite: bool = False,
-) -> Path:
-    return generate_datasets(cache_dir=cache_dir, config=config, overwrite=overwrite)
-
-
-def generate_datasets(
-    cache_dir: Path,
-    config: DatasetConfig,
-    overwrite: bool = False,
-) -> Path:
-    cache_path = _dataset_cache_path(cache_dir, config)
-    if cache_path.exists() and not overwrite:
-        return cache_path
-    rng = np.random.default_rng(config.seed)
-    train_samples, val_samples, test_samples = _generate_size_shift_samples(
-        config=config,
-        rng=rng,
-    )
-    save_dataset(cache_path, train_samples, val_samples, test_samples)
-    return cache_path
 
 def run_size_shift(
     out_dir: Path,
@@ -217,11 +147,14 @@ def run_size_shift(
             )
         train_samples, val_samples, test_samples = load_dataset(cache_path)
     else:
-        train_samples, val_samples, test_samples = _generate_size_shift_samples(
+        train_samples, val_samples, test_samples = generate_samples(
             config=config,
             rng=rng,
         )
-    # PE is computed on-the-fly during training (GPU accelerated)
+    # Pre-compute tokens once for all samples
+    _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
+    _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
+    _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
 
     if use_merging:
         merged = []
@@ -231,15 +164,31 @@ def run_size_shift(
             a = synthesize_from_step(step, n=max(config.train_sizes), rng=rng)
             delta = normalize_shift_operator(a)
             merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
+        _attach_tokens_to_samples(merged, pe_cfg, train_cfg.device)
         train_samples = train_samples + merged
 
-    model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=pe_cfg)
-    train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg=pe_cfg)
-    test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=pe_cfg)
+    # Train and evaluate using pre-computed tokens (pe_cfg=None)
+    model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
+    train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg=None)
+    test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
 
-    # Compute tokens on GPU for discrepancy calculation
-    train_tokens = _compute_tokens_gpu(train_samples, pe_cfg, device=train_cfg.device)
-    test_tokens = _compute_tokens_gpu(test_samples, pe_cfg, device=train_cfg.device)
+    # Compute ID/OOD errors
+    test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
+    train_sizes_set = set(config.train_sizes)
+
+    id_errors = [err for sz, err in test_error_by_size.items() if sz in train_sizes_set]
+    ood_errors = [err for sz, err in test_error_by_size.items() if sz not in train_sizes_set]
+
+    id_error = float(np.mean(id_errors)) if id_errors else 0.0
+    ood_error = float(np.mean(ood_errors)) if ood_errors else 0.0
+
+    # Use pre-computed tokens for discrepancy calculation
+    train_tokens = [s.tokens for s in train_samples]
+    test_tokens = [s.tokens for s in test_samples]
+
+
+    # Compute eigengap stats using GPU batch processing
+    avg_min_gap, avg_gap_k = _compute_eigengap_stats_gpu(test_samples, pe_cfg.k, train_cfg.device)
 
     if discrepancy_mode == "proportional":
         discrepancy = discrepancy_set_proportional(
@@ -259,16 +208,13 @@ def run_size_shift(
         )
     else:
         raise ValueError(f"Unknown discrepancy_mode: {discrepancy_mode}")
-    eig_stats = []
-    for s in test_samples:
-        evals = np.linalg.eigvalsh(s.delta)
-        eig_stats.append(eigengap_stats(evals, pe_cfg.k))
-    avg_min_gap = float(np.mean([e.min_gap for e in eig_stats]))
-    avg_gap_k = float(np.mean([e.gap_k for e in eig_stats]))
 
     result = {
         "train_error": train_error,
         "test_error": test_error,
+        "id_error": id_error,
+        "ood_error": ood_error,
+        "test_error_by_size": {str(k): v for k, v in test_error_by_size.items()},
         "discrepancy_set": discrepancy,
         "discrepancy_mode": discrepancy_mode,
         "eigengap_min": avg_min_gap,
@@ -301,20 +247,33 @@ def run_pe_sweep(
             )
         train_samples, val_samples, test_samples = load_dataset(cache_path)
     else:
-        train_samples, val_samples, test_samples = _generate_size_shift_samples(
+        train_samples, val_samples, test_samples = generate_samples(
             config=config,
             rng=rng,
         )
 
     results = []
+    train_sizes_set = set(config.train_sizes)
     for pe_cfg in pe_grid:
-        # PE computed on-the-fly during training (GPU accelerated)
-        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=pe_cfg)
-        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=pe_cfg)
+        # Pre-compute tokens once for this PE config
+        _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
 
-        # Compute tokens on GPU for discrepancy calculation
-        train_tokens = _compute_tokens_gpu(train_samples, pe_cfg, device=train_cfg.device)
-        test_tokens = _compute_tokens_gpu(test_samples, pe_cfg, device=train_cfg.device)
+        # Train and evaluate using pre-computed tokens (pe_cfg=None)
+        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+
+        # Compute ID/OOD errors
+        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
+        id_errors = [err for sz, err in test_error_by_size.items() if sz in train_sizes_set]
+        ood_errors = [err for sz, err in test_error_by_size.items() if sz not in train_sizes_set]
+        id_error = float(np.mean(id_errors)) if id_errors else 0.0
+        ood_error = float(np.mean(ood_errors)) if ood_errors else 0.0
+
+        # Use pre-computed tokens for discrepancy calculation
+        train_tokens = [s.tokens for s in train_samples]
+        test_tokens = [s.tokens for s in test_samples]
 
         if discrepancy_mode == "proportional":
             discrepancy = discrepancy_set_proportional(
@@ -334,16 +293,16 @@ def run_pe_sweep(
             )
         else:
             raise ValueError(f"Unknown discrepancy_mode: {discrepancy_mode}")
-        eig_stats = []
-        for s in test_samples:
-            evals = np.linalg.eigvalsh(s.delta)
-            eig_stats.append(eigengap_stats(evals, pe_cfg.k))
-        avg_min_gap = float(np.mean([e.min_gap for e in eig_stats]))
-        avg_gap_k = float(np.mean([e.gap_k for e in eig_stats]))
+
+        # Compute eigengap stats using GPU batch processing
+        avg_min_gap, avg_gap_k = _compute_eigengap_stats_gpu(test_samples, pe_cfg.k, train_cfg.device)
         results.append(
             {
                 "pe": pe_cfg.__dict__,
                 "test_error": test_error,
+                "id_error": id_error,
+                "ood_error": ood_error,
+                "test_error_by_size": {str(k): v for k, v in test_error_by_size.items()},
                 "discrepancy_set": discrepancy,
                 "discrepancy_mode": discrepancy_mode,
                 "eigengap_min": avg_min_gap,
