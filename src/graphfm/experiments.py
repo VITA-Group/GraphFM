@@ -10,7 +10,6 @@ import numpy as np
 
 from .dataset import (
     GraphSample,
-    apply_pe,
     load_dataset,
     sample_with_allocation_raw,
     sample_graphs_raw,
@@ -25,9 +24,11 @@ from .metrics import (
     discrepancy_set_proportional,
     eigengap_stats,
 )
-from .pe import PEConfig, compute_pe
+from .pe import PEConfig, compute_pe_batch
 from .sampling import normalize_shift_operator
 from .train import TrainConfig, evaluate_classifier, train_classifier
+
+import torch
 
 
 @dataclass
@@ -49,6 +50,45 @@ def _split_train_val(samples: List[GraphSample], val_frac: float, rng: np.random
     rng.shuffle(samples)
     cut = int(round(len(samples) * (1.0 - val_frac)))
     return samples[:cut], samples[cut:]
+
+
+def _compute_tokens_gpu(
+    samples: List[GraphSample],
+    pe_cfg: PEConfig,
+    device: str = "cuda",
+) -> List[np.ndarray]:
+    """Compute tokens for samples using GPU batch processing.
+
+    Args:
+        samples: list of GraphSample (tokens field is ignored)
+        pe_cfg: PE configuration
+        device: torch device
+
+    Returns:
+        List of token arrays (numpy), one per sample in original order
+    """
+    from collections import defaultdict
+
+    # Group by size
+    by_size: Dict[int, List[Tuple[int, GraphSample]]] = defaultdict(list)
+    for i, s in enumerate(samples):
+        by_size[s.delta.shape[0]].append((i, s))
+
+    tokens_out: List[Optional[np.ndarray]] = [None] * len(samples)
+    dev = torch.device(device)
+
+    for n, group in by_size.items():
+        indices = [g[0] for g in group]
+        deltas = np.stack([g[1].delta for g in group])
+        deltas_t = torch.from_numpy(deltas).to(dev, dtype=torch.float32)
+
+        tokens_t = compute_pe_batch(deltas_t, pe_cfg)  # (B, n, k)
+        tokens_np = tokens_t.cpu().numpy()
+
+        for j, idx in enumerate(indices):
+            tokens_out[idx] = tokens_np[j]
+
+    return tokens_out  # type: ignore
 
 
 def _cache_key(params: Dict) -> str:
@@ -181,27 +221,26 @@ def run_size_shift(
             config=config,
             rng=rng,
         )
-    apply_pe(train_samples, pe_cfg)
-    apply_pe(val_samples, pe_cfg)
-    apply_pe(test_samples, pe_cfg)
+    # PE is computed on-the-fly during training (GPU accelerated)
 
     if use_merging:
         merged = []
         for c in range(config.num_classes):
             class_graphs = [s.adjacency for s in train_samples if s.label == c]
             step = estimate_step_graphon(class_graphs, bins=16)
-            a = synthesize_from_step(step, n=max(config.train_sizes))
+            a = synthesize_from_step(step, n=max(config.train_sizes), rng=rng)
             delta = normalize_shift_operator(a)
-            tokens = compute_pe(delta, pe_cfg)
-            merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=tokens))
+            merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
         train_samples = train_samples + merged
 
-    model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg)
-    train_error = evaluate_classifier(model, train_samples, train_cfg)
-    test_error = evaluate_classifier(model, test_samples, train_cfg)
+    model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=pe_cfg)
+    train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg=pe_cfg)
+    test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=pe_cfg)
 
-    train_tokens = [s.tokens for s in train_samples]
-    test_tokens = [s.tokens for s in test_samples]
+    # Compute tokens on GPU for discrepancy calculation
+    train_tokens = _compute_tokens_gpu(train_samples, pe_cfg, device=train_cfg.device)
+    test_tokens = _compute_tokens_gpu(test_samples, pe_cfg, device=train_cfg.device)
+
     if discrepancy_mode == "proportional":
         discrepancy = discrepancy_set_proportional(
             train_tokens,
@@ -269,32 +308,29 @@ def run_pe_sweep(
 
     results = []
     for pe_cfg in pe_grid:
-        for s in train_samples + val_samples + test_samples:
-            s.tokens = compute_pe(s.delta, pe_cfg)
-        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg)
-        test_error = evaluate_classifier(model, test_samples, train_cfg)
+        # PE computed on-the-fly during training (GPU accelerated)
+        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=pe_cfg)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=pe_cfg)
+
+        # Compute tokens on GPU for discrepancy calculation
+        train_tokens = _compute_tokens_gpu(train_samples, pe_cfg, device=train_cfg.device)
+        test_tokens = _compute_tokens_gpu(test_samples, pe_cfg, device=train_cfg.device)
+
         if discrepancy_mode == "proportional":
             discrepancy = discrepancy_set_proportional(
-                [s.tokens for s in train_samples],
-                [s.tokens for s in test_samples],
+                train_tokens,
+                test_tokens,
                 total_samples=128 * len(train_samples),
                 projections=50,
                 rng=rng,
             )
         elif discrepancy_mode == "uniform":
             discrepancy = discrepancy_set(
-                [s.tokens for s in train_samples],
-                [s.tokens for s in test_samples],
-                samples_per_graph=128,
-                projections=50,
-                rng=rng,
+                train_tokens, test_tokens, samples_per_graph=128, projections=50, rng=rng
             )
         elif discrepancy_mode == "all":
             discrepancy = discrepancy_set_all(
-                [s.tokens for s in train_samples],
-                [s.tokens for s in test_samples],
-                projections=50,
-                rng=rng,
+                train_tokens, test_tokens, projections=50, rng=rng
             )
         else:
             raise ValueError(f"Unknown discrepancy_mode: {discrepancy_mode}")

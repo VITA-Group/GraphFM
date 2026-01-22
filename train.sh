@@ -1,10 +1,10 @@
-OUTPUT_DIR="runs/size_shift_all"
+OUTPUT_DIR="runs/budget100k_deepsets/size_shift"
 DEVICES=(4 5 6 0 1 2 3)
 
 mkdir -p "${OUTPUT_DIR}"
 
 IDX=0
-for LAMBDA in $(seq 0 0.1 1); do
+for LAMBDA in $(seq 0 0.2 1); do
   TAG=$(printf "%.2f" "${LAMBDA}" | tr '.' 'p')
   LOG="${OUTPUT_DIR}/size_shift_lambda_${TAG}.log"
   DEVICE="cuda:${DEVICES[$((IDX % ${#DEVICES[@]}))]}"
@@ -14,7 +14,8 @@ for LAMBDA in $(seq 0 0.1 1); do
     --lambda_mix "${LAMBDA}" \
     --device "${DEVICE}" \
     --cache_dir ./.cache \
-    --discrepancy_mode all \
+    --config configs/budget100k_deepsets_h256_ep100_params200k_eig_k32.yaml \
+    --discrepancy_mode proportional \
     > "${LOG}" 2>&1 &
   IDX=$((IDX + 1))
 done

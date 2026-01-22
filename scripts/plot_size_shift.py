@@ -144,6 +144,7 @@ def main() -> None:
     if args.input_dir:
         rows = load_results(Path(args.input_dir))
         if not rows:
+            print(rows)
             raise SystemExit("No size_shift_lambda_*.json files found.")
         plot_single(rows, Path(args.output))
         return

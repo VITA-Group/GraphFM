@@ -2,7 +2,7 @@
 
 A Graph Foundation Model pipeline for studying graph neural network generalization through graphons and positional encoding strategies. Implements the Section 4 experimental plan from `Generalizable_GraphFM_theory.pdf`.
 
-**Key deviation from paper**: Uses graphon values at i/n directly as weighted adjacency matrix rather than Bernoulli edge sampling.
+**Key deviation from paper**: Uses graphon values W(u_i, u_j) directly as weighted adjacency matrix rather than Bernoulli edge sampling (where u_i ~ Uniform(0,1)).
 
 ## Installation
 
@@ -203,7 +203,7 @@ bash plot.sh runs/dirA/ runs/dirB/ output_dir/ compare.png
 ## Components
 
 - **Graphons**: Fourier family with controllable spectra; step-graphon estimator for merging
-- **Graph sampling**: For size n, set node locations u_i = (i+1)/n and A_ij = W(u_i, u_j) (symmetric, weighted)
+- **Graph sampling**: For size n, sample node locations u_i ~ Uniform(0,1) and set A_ij = W(u_i, u_j) (symmetric, weighted)
 - **PE tokens**: eig-PE, proj-PE, and SPE variant
 - **Models**: DeepSets (default), Degree histogram + MLP baseline, optional GIN
 - **Metrics**: Test error, sliced-W1 discrepancy between train/test token measures, eigengap proxies

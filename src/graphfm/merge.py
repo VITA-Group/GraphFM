@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, List
+from typing import List, Optional
 
 import numpy as np
 
@@ -29,5 +28,9 @@ def estimate_step_graphon(adjacencies: List[np.ndarray], bins: int) -> StepGraph
     return StepGraphon(bins=bins, matrix=mat)
 
 
-def synthesize_from_step(step_graphon: StepGraphon, n: int) -> np.ndarray:
-    return graphon_to_weighted_adjacency(step_graphon, n)
+def synthesize_from_step(
+    step_graphon: StepGraphon,
+    n: int,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    return graphon_to_weighted_adjacency(step_graphon, n, rng=rng)
