@@ -4,11 +4,12 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
+import torch
 import yaml
 
 from .dataset import DatasetConfig
 from .pe import PEConfig
-from .train import TrainConfig
+from .train import TrainConfig, build_model
 
 
 def format_number(n: int) -> str:
@@ -27,35 +28,9 @@ def estimate_model_params(
     in_dim: int,
     num_classes: int,
 ) -> int:
-    """Estimate model parameter count based on config."""
-    h = train_cfg.hidden
-
-    if train_cfg.model == "deepsets":
-        # phi: in->h->h, rho: h->h->out
-        phi_params = in_dim * h + h + h * h + h
-        rho_params = h * h + h + h * num_classes + num_classes
-        return phi_params + rho_params
-
-    if train_cfg.model == "degree":
-        # bins->h->out
-        return train_cfg.degree_bins * h + h + h * num_classes + num_classes
-
-    if train_cfg.model == "gin":
-        # 3 GIN layers + readout
-        # Each GINLayer: MLP(in->out->out) + eps
-        layers = 3
-        dims = [in_dim] + [h] * layers
-        gin_params = 0
-        for i in range(layers):
-            # MLP: d_in->d_out->d_out
-            gin_params += dims[i] * dims[i + 1] + dims[i + 1]
-            gin_params += dims[i + 1] * dims[i + 1] + dims[i + 1]
-            gin_params += 1  # eps
-        # readout: h->h->out
-        readout_params = h * h + h + h * num_classes + num_classes
-        return gin_params + readout_params
-
-    return 0
+    """Return actual model parameter count based on config."""
+    model = build_model(train_cfg, in_dim=in_dim, num_classes=num_classes)
+    return int(sum(p.numel() for p in model.parameters()))
 
 
 def generate_config_filename(
@@ -146,6 +121,8 @@ def merge_config_with_args(
         dataset_dict["lambda_mix"] = args.lambda_mix
     if hasattr(args, "sampling_mode") and args.sampling_mode is not None:
         dataset_dict["sampling_mode"] = args.sampling_mode
+    if hasattr(args, "graphon_type") and args.graphon_type is not None:
+        dataset_dict["graphon_type"] = args.graphon_type
     if hasattr(args, "device") and args.device is not None:
         train_dict["device"] = args.device
     if hasattr(args, "model") and args.model is not None:

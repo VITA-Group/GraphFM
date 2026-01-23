@@ -2,6 +2,7 @@
 # Filename: budget100k_deepsets_h256_ep100_params200k_eig_k32.yaml
 
 dataset:
+  graphon_type: controlled_fourier
   num_classes: 8
   rho: 0.5
   num_terms: 8

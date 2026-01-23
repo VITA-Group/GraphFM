@@ -18,7 +18,7 @@ from .dataset import (
     load_dataset,
 )
 from .graphon import perturb_graphon_coeffs
-from .merge import estimate_step_graphon, synthesize_from_step
+from .merge import OrderingMethod, estimate_step_graphon, synthesize_from_step
 from .metrics import (
     discrepancy_set,
     discrepancy_set_all,
@@ -27,6 +27,14 @@ from .metrics import (
 from .pe import PEConfig, compute_pe_batch
 from .sampling import normalize_shift_operator
 from .train import TrainConfig, evaluate_classifier, evaluate_classifier_by_size, train_classifier
+
+
+def _format_size_stats(samples: List[GraphSample]) -> str:
+    from collections import Counter
+
+    counts = Counter(s.delta.shape[0] for s in samples)
+    parts = ", ".join(f"{size}:{count}" for size, count in sorted(counts.items()))
+    return f"n={len(samples)} sizes={{ {parts} }}"
 
 
 def _compute_tokens_gpu(
@@ -134,7 +142,7 @@ def run_size_shift(
     pe_cfg: PEConfig,
     train_cfg: TrainConfig,
     config: DatasetConfig,
-    use_merging: bool = False,
+    merging_method: Optional[OrderingMethod] = None,
     discrepancy_mode: str = "proportional",
     cache_dir: Optional[Path] = None,
 ) -> Dict:
@@ -146,6 +154,12 @@ def run_size_shift(
                 f"Dataset cache not found: {cache_path}. Run scripts/generate_dataset.py first."
             )
         train_samples, val_samples, test_samples = load_dataset(cache_path)
+        print(
+            "Loaded dataset size stats:",
+            "train", _format_size_stats(train_samples),
+            "val", _format_size_stats(val_samples),
+            "test", _format_size_stats(test_samples),
+        )
     else:
         train_samples, val_samples, test_samples = generate_samples(
             config=config,
@@ -156,16 +170,29 @@ def run_size_shift(
     _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
     _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
 
-    if use_merging:
+    if merging_method is not None:
         merged = []
         for c in range(config.num_classes):
             class_graphs = [s.adjacency for s in train_samples if s.label == c]
-            step = estimate_step_graphon(class_graphs, bins=16)
-            a = synthesize_from_step(step, n=max(config.train_sizes), rng=rng)
+            step = estimate_step_graphon(
+                class_graphs, bins=16, method=merging_method, device=train_cfg.device
+            )
+            a = synthesize_from_step(
+                step, n=max(config.train_sizes), rng=rng, sampling_mode=config.sampling_mode
+            )
             delta = normalize_shift_operator(a)
             merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
         _attach_tokens_to_samples(merged, pe_cfg, train_cfg.device)
         train_samples = train_samples + merged
+        from collections import Counter
+        merged_counts = Counter(s.delta.shape[0] for s in merged)
+        total_counts = Counter(s.delta.shape[0] for s in train_samples)
+        sizes = sorted(total_counts.keys())
+        parts = [
+            f"{size}:{merged_counts.get(size, 0)}/{total_counts.get(size, 0)}"
+            for size in sizes
+        ]
+        print("Merged graphs by size:", " ".join(parts))
 
     # Train and evaluate using pre-computed tokens (pe_cfg=None)
     model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
@@ -220,11 +247,11 @@ def run_size_shift(
         "eigengap_min": avg_min_gap,
         "eigengap_k": avg_gap_k,
         "lambda_mix": config.lambda_mix,
-        "use_merging": use_merging,
+        "merging_method": merging_method,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     lambda_tag = f"{config.lambda_mix:.2f}".replace(".", "p")
-    merge_tag = "_merge" if use_merging else ""
+    merge_tag = f"_merge_{merging_method}" if merging_method else ""
     out_name = f"size_shift_lambda_{lambda_tag}{merge_tag}.json"
     (out_dir / out_name).write_text(json.dumps(result, indent=2))
     return result
@@ -246,6 +273,12 @@ def run_pe_sweep(
                 f"Dataset cache not found: {cache_path}. Run scripts/generate_dataset.py first."
             )
         train_samples, val_samples, test_samples = load_dataset(cache_path)
+        print(
+            "Loaded dataset size stats:",
+            "train", _format_size_stats(train_samples),
+            "val", _format_size_stats(val_samples),
+            "test", _format_size_stats(test_samples),
+        )
     else:
         train_samples, val_samples, test_samples = generate_samples(
             config=config,

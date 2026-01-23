@@ -20,6 +20,12 @@ def main() -> None:
         default="uniform_value",
         help="Sampling mode for graph generation",
     )
+    parser.add_argument(
+        "--graphon_type",
+        choices=["fourier", "controlled_fourier"],
+        default="fourier",
+        help="Type of graphon to use",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -31,6 +37,7 @@ def main() -> None:
         # Allow command-line args to override config values
         lambda_mix = args.lambda_mix if args.lambda_mix is not None else dataset_cfg.lambda_mix
         sampling_mode = args.sampling_mode if args.sampling_mode is not None else dataset_cfg.sampling_mode
+        graphon_type = args.graphon_type if args.graphon_type is not None else getattr(dataset_cfg, "graphon_type", "fourier")
         dataset_cfg = DatasetConfig(
             num_classes=dataset_cfg.num_classes,
             rho=dataset_cfg.rho,
@@ -44,12 +51,14 @@ def main() -> None:
             seed=dataset_cfg.seed,
             lambda_mix=lambda_mix,
             sampling_mode=sampling_mode,
+            graphon_type=graphon_type,
         )
     else:
         # Use defaults with optional overrides
         dataset_cfg = DatasetConfig(
             lambda_mix=args.lambda_mix if args.lambda_mix is not None else 0.0,
             sampling_mode=args.sampling_mode if args.sampling_mode is not None else "uniform_value",
+            graphon_type=args.graphon_type if args.graphon_type is not None else "fourier",
         )
 
     cache_path = generate_datasets(

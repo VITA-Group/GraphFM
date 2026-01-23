@@ -29,10 +29,14 @@ class DeepSets(nn.Module):
         super().__init__()
         self.phi = MLP([in_dim, hidden, hidden], dropout=dropout)
         self.rho = MLP([hidden, hidden, out_dim], dropout=dropout)
+        # self.norm_phi = nn.LayerNorm(hidden)
+        # self.norm_rho = nn.LayerNorm(hidden)
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         h = self.phi(tokens)
+        # h = self.norm_phi(h)
         pooled = h.mean(dim=0, keepdim=True)
+        # pooled = self.norm_rho(pooled)
         return self.rho(pooled).squeeze(0)
 
 
@@ -52,7 +56,10 @@ class GINLayer(nn.Module):
         self.mlp = MLP([in_dim, out_dim, out_dim])
 
     def forward(self, x: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
-        agg = adj @ x
+        deg = adj.sum(dim=1).clamp_min(1.0)
+        D_inv_sqrt = deg.pow(-0.5)
+        adj_norm = D_inv_sqrt[:,None] * adj * D_inv_sqrt[None,:]
+        agg = adj_norm @ x
         return self.mlp((1.0 + self.eps) * x + agg)
 
 

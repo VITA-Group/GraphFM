@@ -8,10 +8,10 @@
 set -euo pipefail
 
 dir_a="${1}"
-dir_b="${2}"
+dir_b="${2:-none}"
 # out="${3:-runs/size_shift_all_merge/size_shift_lambda_plot.png}"
 
-if [[ -n "${dir_b}" ]]; then
+if [[ "${dir_b}" != "none" ]]; then
   out="${dir_b}/compare_$(basename "${dir_a}")_$(basename "${dir_b}").png"
   python scripts/plot_size_shift.py \
     --input_dir_a "${dir_a}" \

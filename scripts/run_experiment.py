@@ -12,6 +12,7 @@ from graphfm.train import TrainConfig
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--graphon_type", type=str, default="controlled_fourier")
     parser.add_argument("--config", type=str, help="Path to YAML config file")
     parser.add_argument("--experiment", choices=["size_shift", "pe_sweep"], required=True)
     parser.add_argument("--output", type=str, required=True)
@@ -25,7 +26,12 @@ def main() -> None:
         default="uniform_value",
         help="Sampling mode for graph generation",
     )
-    parser.add_argument("--use_merging", action="store_true")
+    parser.add_argument(
+        "--merging_method",
+        choices=["degree", "spectral"],
+        default=None,
+        help="Graphon estimation method for merging (None = no merging)",
+    )
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--cache_dir", type=str)
@@ -66,7 +72,7 @@ def main() -> None:
             pe_cfg=pe_cfg,
             train_cfg=train_cfg,
             config=exp_cfg,
-            use_merging=args.use_merging,
+            merging_method=args.merging_method,
             discrepancy_mode=args.discrepancy_mode,
             cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         )

@@ -110,11 +110,11 @@ def plot_compare(
     ax1.set_title(label_a)
 
     ax1b = ax1.twinx()
-    # ax1b.plot(lambdas_a, train_error_a, "d-.", color="#2ca02c", label="train_error")
-    # ax1b.plot(lambdas_a, test_error_a, "s--", color="#d62728", label="test_error")
-    # ax1b.plot(lambdas_a, id_error_a - train_error_a, "^:", color="#9467bd", label="id_gap")
-    # ax1b.plot(lambdas_a, ood_error_a - train_error_a, "v:", color="#ff7f0e", label="ood_gap")
-    ax1b.plot(lambdas_a, test_error_a - train_error_a, "h--", color="#17becf", label="gap")
+    ax1b.plot(lambdas_a, train_error_a, "d-.", color="#2ca02c", label="train_error")
+    ax1b.plot(lambdas_a, test_error_a, "s--", color="#d62728", label="test_error")
+    ax1b.plot(lambdas_a, id_error_a - train_error_a, "^:", color="#9467bd", label="id_gap")
+    ax1b.plot(lambdas_a, ood_error_a - train_error_a, "v:", color="#ff7f0e", label="ood_gap")
+    # ax1b.plot(lambdas_a, test_error_a - train_error_a, "h--", color="#17becf", label="gap")
 
     ax1b.set_ylabel("error", color="#333333")
     ax1b.tick_params(axis="y", labelcolor="#333333")
@@ -132,11 +132,11 @@ def plot_compare(
     ax2.set_title(label_b)
 
     ax2b = ax2.twinx()
-    # ax2b.plot(lambdas_b, train_error_b, "d-.", color="#2ca02c", label="train_error")
-    # ax2b.plot(lambdas_b, test_error_b, "s--", color="#d62728", label="test_error")
-    # ax2b.plot(lambdas_b, id_error_b - train_error_b, "^:", color="#9467bd", label="id_gap")
-    # ax2b.plot(lambdas_b, ood_error_b, "v:", color="#ff7f0e", label="ood_gap")
-    ax2b.plot(lambdas_b, test_error_b - train_error_b, "h--", color="#17becf", label="gap")
+    ax2b.plot(lambdas_b, train_error_b, "d-.", color="#2ca02c", label="train_error")
+    ax2b.plot(lambdas_b, test_error_b, "s--", color="#d62728", label="test_error")
+    ax2b.plot(lambdas_b, id_error_b - train_error_b, "^:", color="#9467bd", label="id_gap")
+    ax2b.plot(lambdas_b, ood_error_b, "v:", color="#ff7f0e", label="ood_gap")
+    # ax2b.plot(lambdas_b, test_error_b - train_error_b, "h--", color="#17becf", label="gap")
 
     ax2b.set_ylabel("error", color="#333333")
     ax2b.tick_params(axis="y", labelcolor="#333333")

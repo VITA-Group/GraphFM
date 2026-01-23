@@ -9,7 +9,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 from tqdm import tqdm
 
-from .graphon import FourierGraphon, Graphon, StepGraphon, make_fourier_graphons
+from .graphon import (
+    ControlledFourierGraphon,
+    FourierGraphon,
+    Graphon,
+    StepGraphon,
+    make_controlled_fourier_graphons,
+    make_fourier_graphons,
+)
 from .sampling import (
     SamplingMode,
     graphon_to_weighted_adjacency,
@@ -40,6 +47,7 @@ class DatasetConfig:
     seed: int = 0
     lambda_mix: float = 0.0
     sampling_mode: SamplingMode = "uniform_value"
+    graphon_type: str = "fourier"  # "fourier" or "controlled_fourier"
 
 
 def apply_pe(samples: List[GraphSample], pe_cfg: PEConfig) -> None:
@@ -302,13 +310,21 @@ def generate_samples(
 
     This function was previously named _generate_size_shift_samples.
     """
-    graphons = make_fourier_graphons(
-        num_classes=config.num_classes,
-        rho=config.rho,
-        num_terms=config.num_terms,
-        coeff_scale=config.coeff_scale,
-        rng=rng,
-    )
+    if config.graphon_type == "controlled_fourier":
+        graphons = make_controlled_fourier_graphons(
+            num_classes=config.num_classes,
+            rho=config.rho,
+            num_terms=config.num_terms,
+            rng=rng,
+        )
+    else:  # default "fourier"
+        graphons = make_fourier_graphons(
+            num_classes=config.num_classes,
+            rho=config.rho,
+            num_terms=config.num_terms,
+            coeff_scale=config.coeff_scale,
+            rng=rng,
+        )
     allocation = size_allocation_path(
         sizes_small=(config.train_sizes[0], config.train_sizes[1]),
         sizes_large=(config.train_sizes[2], config.train_sizes[3]),
