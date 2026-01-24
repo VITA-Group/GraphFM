@@ -10,7 +10,7 @@ from .graphon import StepGraphon
 from .sampling import SamplingMode, graphon_to_weighted_adjacency
 
 
-OrderingMethod = Literal["degree", "spectral"]
+OrderingMethod = Literal["degree", "spectral", "usvt"]
 
 
 # ============================================================================
@@ -173,6 +173,148 @@ def _accumulate_bins_gpu(
     return accum.view(bins, bins), counts.view(bins, bins)
 
 
+# ============================================================================
+# USVT (Universal Singular Value Thresholding) implementations
+# ============================================================================
+
+
+def _downsample_to_bins(matrix: np.ndarray, bins: int) -> np.ndarray:
+    """Downsample a matrix to bins x bins by averaging blocks."""
+    n = matrix.shape[0]
+    result = np.zeros((bins, bins), dtype=np.float64)
+
+    for i in range(bins):
+        for j in range(bins):
+            i_start = (i * n) // bins
+            i_end = ((i + 1) * n) // bins
+            j_start = (j * n) // bins
+            j_end = ((j + 1) * n) // bins
+            result[i, j] = matrix[i_start:i_end, j_start:j_end].mean()
+
+    return result
+
+
+def _estimate_usvt_gpu(
+    adjacencies: List[np.ndarray],
+    bins: int,
+    threshold: float = 2.02,
+    device: str = "cuda",
+) -> StepGraphon:
+    """Estimate graphon using Universal Singular Value Thresholding - GPU version.
+
+    Reference:
+    Chatterjee, Sourav. "Matrix estimation by universal singular value thresholding."
+    The Annals of Statistics 43.1 (2015): 177-214.
+
+    Args:
+        adjacencies: List of adjacency matrices (can have different sizes).
+        bins: Number of bins for the step graphon.
+        threshold: Threshold multiplier for singular values (default 2.02).
+        device: Torch device.
+
+    Returns:
+        Estimated StepGraphon.
+    """
+    dev = torch.device(device)
+
+    # Find max size and pad all matrices to that size
+    max_n = max(a.shape[0] for a in adjacencies)
+
+    padded = []
+    for a in adjacencies:
+        n = a.shape[0]
+        if n < max_n:
+            pad_a = np.zeros((max_n, max_n), dtype=a.dtype)
+            pad_a[:n, :n] = a
+            padded.append(pad_a)
+        else:
+            padded.append(a)
+
+    # Stack and move to device
+    adj_batch = np.stack(padded)
+    adj_t = torch.from_numpy(adj_batch).to(dev, dtype=torch.float32)
+
+    # Average adjacency matrices
+    avg_adj = torch.mean(adj_t, dim=0)  # (max_n, max_n)
+
+    # SVD
+    u, s, vh = torch.linalg.svd(avg_adj, full_matrices=False)
+
+    # Threshold singular values
+    singular_threshold = threshold * (max_n ** 0.5)
+    s_thresholded = torch.where(s < singular_threshold, torch.zeros_like(s), s)
+
+    # Reconstruct
+    graphon = u @ torch.diag(s_thresholded) @ vh
+
+    # Clip to [0, 1]
+    graphon = torch.clamp(graphon, 0.0, 1.0)
+
+    # Ensure symmetry
+    graphon = 0.5 * (graphon + graphon.T)
+
+    # Downsample to bins x bins for StepGraphon compatibility
+    graphon_np = graphon.cpu().numpy()
+    step_matrix = _downsample_to_bins(graphon_np, bins)
+
+    return StepGraphon(bins=bins, matrix=step_matrix)
+
+
+def _estimate_usvt_cpu(
+    adjacencies: List[np.ndarray],
+    bins: int,
+    threshold: float = 2.02,
+) -> StepGraphon:
+    """Estimate graphon using Universal Singular Value Thresholding - CPU version.
+
+    Reference:
+    Chatterjee, Sourav. "Matrix estimation by universal singular value thresholding."
+    The Annals of Statistics 43.1 (2015): 177-214.
+
+    Args:
+        adjacencies: List of adjacency matrices (can have different sizes).
+        bins: Number of bins for the step graphon.
+        threshold: Threshold multiplier for singular values (default 2.02).
+
+    Returns:
+        Estimated StepGraphon.
+    """
+    # Find max size and pad all matrices to that size
+    max_n = max(a.shape[0] for a in adjacencies)
+
+    padded = []
+    for a in adjacencies:
+        n = a.shape[0]
+        if n < max_n:
+            pad_a = np.zeros((max_n, max_n), dtype=a.dtype)
+            pad_a[:n, :n] = a
+            padded.append(pad_a)
+        else:
+            padded.append(a)
+
+    # Average adjacency matrices
+    avg_adj = np.mean(np.stack(padded), axis=0)
+
+    # SVD
+    u, s, vh = np.linalg.svd(avg_adj, full_matrices=False)
+
+    # Threshold singular values
+    singular_threshold = threshold * (max_n ** 0.5)
+    s_thresholded = np.where(s < singular_threshold, 0.0, s)
+
+    # Reconstruct
+    graphon = u @ np.diag(s_thresholded) @ vh
+
+    # Clip to [0, 1] and ensure symmetry
+    graphon = np.clip(graphon, 0.0, 1.0)
+    graphon = 0.5 * (graphon + graphon.T)
+
+    # Downsample to bins x bins for StepGraphon compatibility
+    step_matrix = _downsample_to_bins(graphon, bins)
+
+    return StepGraphon(bins=bins, matrix=step_matrix)
+
+
 def estimate_step_graphon_gpu(
     adjacencies: List[np.ndarray],
     bins: int,
@@ -184,12 +326,16 @@ def estimate_step_graphon_gpu(
     Args:
         adjacencies: List of adjacency matrices (can have different sizes).
         bins: Number of bins for the step graphon.
-        method: Node ordering method ("degree" or "spectral").
+        method: Node ordering method ("degree", "spectral", or "usvt").
         device: Torch device ("cuda" or "cpu").
 
     Returns:
         Estimated StepGraphon.
     """
+    # Handle USVT separately (different algorithm)
+    if method == "usvt":
+        return _estimate_usvt_gpu(adjacencies, bins, device=device)
+
     dev = torch.device(device)
 
     # Group adjacencies by size for batch processing
@@ -246,11 +392,18 @@ def estimate_step_graphon(
         method: Node ordering method:
             - "degree": Order by node degree (fast, simple)
             - "spectral": Order by Fiedler vector (better for complex structures)
+            - "usvt": Universal Singular Value Thresholding (direct estimation)
         device: Device for computation ("cpu" or "cuda").
 
     Returns:
         Estimated StepGraphon.
     """
+    # Handle USVT separately (different algorithm)
+    if method == "usvt":
+        if device != "cpu":
+            return _estimate_usvt_gpu(adjacencies, bins, device=device)
+        return _estimate_usvt_cpu(adjacencies, bins)
+
     if device != "cpu":
         return estimate_step_graphon_gpu(adjacencies, bins, method, device)
 

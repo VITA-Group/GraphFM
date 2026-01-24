@@ -155,7 +155,7 @@ python scripts/run_experiment.py \
   --cache_dir ./.cache
 
 # Multi-GPU sweep across lambda values
-bash train.sh
+bash train.sh size
 ```
 
 Output: `{output}/size_shift_lambda_{value}.json`
@@ -165,7 +165,53 @@ Output: `{output}/size_shift_lambda_{value}.json`
   "test_error": 0.12,
   "discrepancy_set": 0.034,
   "lambda_mix": 0.3,
-  "use_merging": false
+  "merging_method": null
+}
+```
+
+### Merge Graph Experiment
+
+**Purpose**: Study graphon-based data augmentation with controllable merging ratio and merged graph sizes.
+
+The experiment estimates a step-graphon from training graphs per class, then synthesizes new graphs at scaled sizes to augment the training set.
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `merging_method` | str | "spectral" | Node ordering: "degree" or "spectral" |
+| `merging_ratio` | float | 0.5 | Ratio of merged graphs to original graphs per class |
+| `merging_size` | float | 2.0 | Size multiplier for merged graphs (1.5, 2.0, or 3.0) |
+
+```bash
+# Single run
+python scripts/run_experiment.py \
+  --config configs/budget10k_deepsets_h128_ep50_params50k_eig_k16.yaml \
+  --experiment merge_graph \
+  --output runs/merge_graph \
+  --merging_method spectral \
+  --merging_ratio 0.5 \
+  --merging_size 2.0 \
+  --device cuda \
+  --cache_dir ./.cache
+
+# Multi-GPU sweep: 3 ratios × 3 sizes = 9 configurations
+bash train.sh merge
+```
+
+Output: `{output}/merge_graph_method_{method}_ratio_{ratio}_size_{size}.json`
+```json
+{
+  "train_error": 0.05,
+  "test_error": 0.10,
+  "id_error": 0.08,
+  "ood_error": 0.12,
+  "discrepancy_set": 0.028,
+  "merging_method": "spectral",
+  "merging_ratio": 0.5,
+  "merging_size": 2.0,
+  "num_original_train": 200,
+  "num_merged": 100,
+  "merged_sizes": [128, 256, 512, 1024]
 }
 ```
 
@@ -190,15 +236,48 @@ Default grid searches:
 - eig: k ∈ {8, 16, 32, 64}
 - proj: k ∈ {8, 16, 32}, m ∈ {8, 16, 32}
 
+## Multi-GPU Training
+
+The `train.sh` script supports parallel execution across multiple GPUs:
+
+```bash
+bash train.sh           # Default: runs size_shift experiment
+bash train.sh size      # Runs size_shift with lambda 0.0 to 1.0 (6 configs)
+bash train.sh merge     # Runs merge_graph with ratio/size sweep (9 configs)
+```
+
+Configuration variables in `train.sh`:
+- `DEVICES`: GPU indices for round-robin assignment
+- `CONFIG`: Path to YAML config file
+- `CACHE_DIR`: Dataset cache directory
+
 ## Visualization
 
 ```bash
-# Single directory
+# Auto-detect experiment type from directory contents
 bash plot.sh runs/size_shift/
+bash plot.sh runs/merge_graph/
 
-# Compare two experiment directories
-bash plot.sh runs/dirA/ runs/dirB/ output_dir/ compare.png
+# Force specific plot type
+bash plot.sh size runs/size_shift/
+bash plot.sh merge runs/merge_graph/
+
+# Compare two size_shift directories
+bash plot.sh runs/dirA/ runs/dirB/
 ```
+
+### Size Shift Plots
+
+Single plot showing discrepancy and errors vs lambda_mix.
+
+Output: `{dir}/single_plot.png`
+
+### Merge Graph Plots
+
+Three visualization types:
+- **Heatmap** (`merge_graph_heatmap.png`): 2×3 grid showing metrics across ratio/size combinations
+- **Lines by ratio** (`merge_graph_heatmap_lines.png`): Metrics vs merging_size, one line per ratio
+- **Lines by size** (`merge_graph_heatmap_by_ratio.png`): Metrics vs merging_ratio, one line per size
 
 ## Components
 

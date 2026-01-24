@@ -17,7 +17,7 @@ except ImportError as exc:  # pragma: no cover
 
 def load_results(input_dir: Path) -> List[Tuple[float, float, float, float, float, float]]:
     rows: List[Tuple[float, float, float, float, float, float]] = []
-    for path in sorted(input_dir.glob("size_shift_lambda_*.json*")):
+    for path in sorted(input_dir.glob("*.json*")):
         try:
             data = json.loads(path.read_text())
         except json.JSONDecodeError:
@@ -69,8 +69,8 @@ def plot_single(rows: List[Tuple[float, float, float, float, float, float]], out
     ax1.tick_params(axis="y", labelcolor="#1f77b4")
 
     ax2 = ax1.twinx()
-    ax2.plot(lambdas, train_error, "d-.", color="#2ca02c", label="train_error")
-    ax2.plot(lambdas, test_error, "s--", color="#d62728", label="test_error")
+    # ax2.plot(lambdas, train_error, "d-.", color="#2ca02c", label="train_error")
+    # ax2.plot(lambdas, test_error, "s--", color="#d62728", label="test_error")
     ax2.plot(lambdas, id_error, "^:", color="#9467bd", label="id_error")
     ax2.plot(lambdas, ood_error, "v:", color="#ff7f0e", label="ood_error")
     ax2.set_ylabel("error", color="#333333")
@@ -112,8 +112,8 @@ def plot_compare(
     ax1b = ax1.twinx()
     ax1b.plot(lambdas_a, train_error_a, "d-.", color="#2ca02c", label="train_error")
     ax1b.plot(lambdas_a, test_error_a, "s--", color="#d62728", label="test_error")
-    ax1b.plot(lambdas_a, id_error_a - train_error_a, "^:", color="#9467bd", label="id_gap")
-    ax1b.plot(lambdas_a, ood_error_a - train_error_a, "v:", color="#ff7f0e", label="ood_gap")
+    ax1b.plot(lambdas_a, id_error_a, "^:", color="#9467bd", label="id_error")
+    ax1b.plot(lambdas_a, ood_error_a, "v:", color="#ff7f0e", label="ood_error")
     # ax1b.plot(lambdas_a, test_error_a - train_error_a, "h--", color="#17becf", label="gap")
 
     ax1b.set_ylabel("error", color="#333333")
@@ -134,8 +134,8 @@ def plot_compare(
     ax2b = ax2.twinx()
     ax2b.plot(lambdas_b, train_error_b, "d-.", color="#2ca02c", label="train_error")
     ax2b.plot(lambdas_b, test_error_b, "s--", color="#d62728", label="test_error")
-    ax2b.plot(lambdas_b, id_error_b - train_error_b, "^:", color="#9467bd", label="id_gap")
-    ax2b.plot(lambdas_b, ood_error_b, "v:", color="#ff7f0e", label="ood_gap")
+    ax2b.plot(lambdas_b, id_error_b, "^:", color="#9467bd", label="id_error")
+    ax2b.plot(lambdas_b, ood_error_b, "v:", color="#ff7f0e", label="ood_error")
     # ax2b.plot(lambdas_b, test_error_b - train_error_b, "h--", color="#17becf", label="gap")
 
     ax2b.set_ylabel("error", color="#333333")
