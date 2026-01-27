@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from .dataset import GraphSample
 from .models import DeepSets, DegreeHistMLP, GIN
-from .pe import PEConfig, compute_pe_batch
+from .pe import PEConfig, compute_pe_batch, build_learnable_pe, eigh_batch_for_learnable
 
 
 class GraphDataset(Dataset):
@@ -95,7 +95,17 @@ def train_classifier(
         config: training configuration
         pe_cfg: PE configuration for on-the-fly computation (GPU accelerated).
                 If None, uses pre-computed tokens from samples.
+
+    Returns:
+        For spe_learnable: tuple of (classifier, learnable_pe)
+        Otherwise: classifier model
     """
+    # Handle learnable PE case - returns tuple
+    if pe_cfg is not None and pe_cfg.kind == "spe_learnable":
+        return _train_with_learnable_pe(
+            train_samples, val_samples, num_classes, config, pe_cfg
+        )
+
     device = torch.device(config.device)
 
     # Determine input dimension
@@ -195,12 +205,109 @@ def train_classifier(
     return model
 
 
+def _train_with_learnable_pe(
+    train_samples: List[GraphSample],
+    val_samples: List[GraphSample],
+    num_classes: int,
+    config: TrainConfig,
+    pe_cfg: PEConfig,
+) -> Tuple[nn.Module, nn.Module]:
+    """Train classifier + learnable PE end-to-end.
+
+    Args:
+        train_samples: training samples
+        val_samples: validation samples
+        num_classes: number of classes
+        config: training configuration
+        pe_cfg: PE configuration (must be spe_learnable)
+
+    Returns:
+        Tuple of (classifier, learnable_pe)
+    """
+    device = torch.device(config.device)
+
+    in_dim = pe_cfg.m
+    model = build_model(config, in_dim=in_dim, num_classes=num_classes).to(device)
+    learnable_pe = build_learnable_pe(pe_cfg).to(device)
+
+    all_params = list(model.parameters()) + list(learnable_pe.parameters())
+    opt = torch.optim.Adam(all_params, lr=config.lr, weight_decay=config.weight_decay)
+    loss_fn = nn.CrossEntropyLoss()
+
+    train_grouped = _group_by_size(train_samples, device)
+    val_grouped = _group_by_size(val_samples, device)
+
+    def run_epoch(
+        grouped: Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        train: bool,
+    ) -> float:
+        if train:
+            model.train()
+            learnable_pe.train()
+        else:
+            model.eval()
+            learnable_pe.eval()
+
+        total_loss = 0.0
+        count = 0
+
+        for n, (deltas, adjs, labels) in grouped.items():
+            Lambda, V = eigh_batch_for_learnable(deltas, pe_cfg.k)
+            tokens_list = learnable_pe(Lambda, V)
+
+            # Accumulate loss for the batch group before backward
+            batch_loss = torch.tensor(0.0, device=device)
+            batch_count = 0
+
+            for i, tokens in enumerate(tokens_list):
+                if config.model == "gin":
+                    logits = model(tokens, adjs[i])
+                else:
+                    logits = model(tokens)
+                loss = loss_fn(logits.unsqueeze(0), labels[i].unsqueeze(0))
+                batch_loss = batch_loss + loss
+                batch_count += 1
+
+            if train and batch_count > 0:
+                opt.zero_grad()
+                batch_loss.backward()
+                opt.step()
+
+            total_loss += batch_loss.item()
+            count += batch_count
+
+        return total_loss / max(count, 1)
+
+    best_model_state = None
+    best_pe_state = None
+    best_val = float("inf")
+    epoch_pbar = tqdm(range(config.epochs), desc="Training (learnable PE)", unit="epoch")
+
+    for epoch in epoch_pbar:
+        train_loss = run_epoch(train_grouped, train=True)
+        val_loss = run_epoch(val_grouped, train=False)
+
+        epoch_pbar.set_postfix(train_loss=f"{train_loss:.4f}", val_loss=f"{val_loss:.4f}")
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_model_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            best_pe_state = {k: v.detach().cpu() for k, v in learnable_pe.state_dict().items()}
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        learnable_pe.load_state_dict(best_pe_state)
+
+    return model, learnable_pe
+
+
 def evaluate_classifier(
     model: nn.Module,
     samples: List[GraphSample],
     config: TrainConfig,
     pe_cfg: Optional[PEConfig] = None,
     desc: str = "Evaluating",
+    learnable_pe: Optional[nn.Module] = None,
 ) -> float:
     """Evaluate a graph classifier.
 
@@ -211,6 +318,7 @@ def evaluate_classifier(
         pe_cfg: PE configuration for on-the-fly computation (GPU accelerated).
                 If None, uses pre-computed tokens from samples.
         desc: progress bar description
+        learnable_pe: learnable PE module (required if pe_cfg.kind == "spe_learnable")
     """
     device = torch.device(config.device)
     model.eval()
@@ -218,7 +326,22 @@ def evaluate_classifier(
     total = 0
 
     with torch.no_grad():
-        if pe_cfg is not None:
+        if pe_cfg is not None and pe_cfg.kind == "spe_learnable" and learnable_pe is not None:
+            # Learnable PE evaluation
+            learnable_pe.eval()
+            grouped = _group_by_size(samples, device)
+            for n, (deltas, adjs, labels) in grouped.items():
+                Lambda, V = eigh_batch_for_learnable(deltas, pe_cfg.k)
+                tokens_list = learnable_pe(Lambda, V)
+                for i, tokens in enumerate(tokens_list):
+                    if config.model == "gin":
+                        logits = model(tokens, adjs[i])
+                    else:
+                        logits = model(tokens)
+                    pred = int(torch.argmax(logits).item())
+                    correct += int(pred == int(labels[i].item()))
+                    total += 1
+        elif pe_cfg is not None:
             # On-the-fly GPU batch PE computation
             grouped = _group_by_size(samples, device)
             for n, (deltas, adjs, labels) in grouped.items():
@@ -258,6 +381,7 @@ def evaluate_classifier_by_size(
     samples: List[GraphSample],
     config: TrainConfig,
     pe_cfg: Optional[PEConfig] = None,
+    learnable_pe: Optional[nn.Module] = None,
 ) -> Dict[int, float]:
     """Evaluate a graph classifier and return error rate per graph size.
 
@@ -267,6 +391,7 @@ def evaluate_classifier_by_size(
         config: training configuration
         pe_cfg: PE configuration for on-the-fly computation (GPU accelerated).
                 If None, uses pre-computed tokens from samples.
+        learnable_pe: learnable PE module (required if pe_cfg.kind == "spe_learnable")
 
     Returns:
         Dict mapping graph size -> error rate for that size
@@ -279,7 +404,22 @@ def evaluate_classifier_by_size(
     total_by_size: Dict[int, int] = defaultdict(int)
 
     with torch.no_grad():
-        if pe_cfg is not None:
+        if pe_cfg is not None and pe_cfg.kind == "spe_learnable" and learnable_pe is not None:
+            # Learnable PE evaluation
+            learnable_pe.eval()
+            grouped = _group_by_size(samples, device)
+            for n, (deltas, adjs, labels) in grouped.items():
+                Lambda, V = eigh_batch_for_learnable(deltas, pe_cfg.k)
+                tokens_list = learnable_pe(Lambda, V)
+                for i, tokens in enumerate(tokens_list):
+                    if config.model == "gin":
+                        logits = model(tokens, adjs[i])
+                    else:
+                        logits = model(tokens)
+                    pred = int(torch.argmax(logits).item())
+                    correct_by_size[n] += int(pred == int(labels[i].item()))
+                    total_by_size[n] += 1
+        elif pe_cfg is not None:
             # On-the-fly GPU batch PE computation
             grouped = _group_by_size(samples, device)
             for n, (deltas, adjs, labels) in grouped.items():

@@ -107,6 +107,7 @@ elif [[ "${MODE}" == "perturb" ]]; then
       --graphon_type "${GRAPHON_TYPE}" \
       > "${LOG}" 2>&1 &
     IDX=$((IDX + 1))
+    done
   done
 
 else

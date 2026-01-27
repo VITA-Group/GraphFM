@@ -30,7 +30,7 @@ from .metrics import (
     discrepancy_set_all,
     discrepancy_set_proportional,
 )
-from .pe import PEConfig, compute_pe_batch
+from .pe import PEConfig, compute_pe_batch, eigh_batch_for_learnable
 from .sampling import SamplingMode, graphon_to_weighted_adjacency, normalize_shift_operator
 from .train import TrainConfig, evaluate_classifier, evaluate_classifier_by_size, train_classifier
 
@@ -78,6 +78,49 @@ def _compute_tokens_gpu(
 
         for j, idx in enumerate(indices):
             tokens_out[idx] = tokens_np[j]
+
+    return tokens_out  # type: ignore
+
+
+def _compute_tokens_learnable(
+    samples: List[GraphSample],
+    pe_cfg: PEConfig,
+    learnable_pe: torch.nn.Module,
+    device: str = "cuda",
+) -> List[np.ndarray]:
+    """Compute tokens using a trained learnable PE module.
+
+    Args:
+        samples: list of GraphSample
+        pe_cfg: PE configuration
+        learnable_pe: trained StableExpressivePE module
+        device: torch device
+
+    Returns:
+        List of token arrays (numpy), one per sample in original order
+    """
+    from collections import defaultdict
+
+    # Group by size
+    by_size: Dict[int, List[Tuple[int, GraphSample]]] = defaultdict(list)
+    for i, s in enumerate(samples):
+        by_size[s.delta.shape[0]].append((i, s))
+
+    tokens_out: List[Optional[np.ndarray]] = [None] * len(samples)
+    dev = torch.device(device)
+    learnable_pe.eval()
+
+    with torch.no_grad():
+        for n, group in by_size.items():
+            indices = [g[0] for g in group]
+            deltas = np.stack([g[1].delta for g in group])
+            deltas_t = torch.from_numpy(deltas).to(dev, dtype=torch.float32)
+
+            Lambda, V = eigh_batch_for_learnable(deltas_t, pe_cfg.k)
+            tokens_list = learnable_pe(Lambda, V)  # List of [n, m] tensors
+
+            for j, idx in enumerate(indices):
+                tokens_out[idx] = tokens_list[j].cpu().numpy()
 
     return tokens_out  # type: ignore
 
@@ -171,10 +214,15 @@ def run_size_shift(
             config=config,
             rng=rng,
         )
-    # Pre-compute tokens once for all samples
-    _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
-    _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
-    _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
+    # Handle learnable PE differently - no pre-computed tokens
+    is_learnable_pe = pe_cfg.kind == "spe_learnable"
+    learnable_pe = None
+
+    if not is_learnable_pe:
+        # Pre-compute tokens once for all samples
+        _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
 
     if merging_method is not None:
         merged = []
@@ -188,7 +236,8 @@ def run_size_shift(
             )
             delta = normalize_shift_operator(a)
             merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
-        _attach_tokens_to_samples(merged, pe_cfg, train_cfg.device)
+        if not is_learnable_pe:
+            _attach_tokens_to_samples(merged, pe_cfg, train_cfg.device)
         train_samples = train_samples + merged
         from collections import Counter
         merged_counts = Counter(s.delta.shape[0] for s in merged)
@@ -200,13 +249,21 @@ def run_size_shift(
         ]
         print("Merged graphs by size:", " ".join(parts))
 
-    # Train and evaluate using pre-computed tokens (pe_cfg=None)
-    model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
-    train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg=None)
-    test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+    # Train and evaluate
+    if is_learnable_pe:
+        # Learnable PE: train jointly with model
+        model, learnable_pe = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg)
+        train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+    else:
+        # Pre-computed tokens: pass pe_cfg=None
+        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
+        train_error = evaluate_classifier(model, train_samples, train_cfg, pe_cfg=None)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
 
     # Compute ID/OOD errors
-    test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
     train_sizes_set = set(config.train_sizes)
 
     id_errors = [err for sz, err in test_error_by_size.items() if sz in train_sizes_set]
@@ -215,10 +272,15 @@ def run_size_shift(
     id_error = float(np.mean(id_errors)) if id_errors else 0.0
     ood_error = float(np.mean(ood_errors)) if ood_errors else 0.0
 
-    # Use pre-computed tokens for discrepancy calculation
-    train_tokens = [s.tokens for s in train_samples]
-    test_tokens = [s.tokens for s in test_samples]
-
+    # Compute tokens for discrepancy calculation
+    if is_learnable_pe and learnable_pe is not None:
+        # For learnable PE, compute tokens using the trained module
+        train_tokens = _compute_tokens_learnable(train_samples, pe_cfg, learnable_pe, train_cfg.device)
+        test_tokens = _compute_tokens_learnable(test_samples, pe_cfg, learnable_pe, train_cfg.device)
+    else:
+        # Use pre-computed tokens
+        train_tokens = [s.tokens for s in train_samples]
+        test_tokens = [s.tokens for s in test_samples]
 
     # Compute eigengap stats using GPU batch processing
     avg_min_gap, avg_gap_k = _compute_eigengap_stats_gpu(test_samples, pe_cfg.k, train_cfg.device)
@@ -294,25 +356,36 @@ def run_pe_sweep(
     results = []
     train_sizes_set = set(config.train_sizes)
     for pe_cfg in pe_grid:
-        # Pre-compute tokens once for this PE config
-        _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
-        _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
-        _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
+        is_learnable_pe = pe_cfg.kind == "spe_learnable"
+        learnable_pe = None
 
-        # Train and evaluate using pre-computed tokens (pe_cfg=None)
-        model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
-        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+        if is_learnable_pe:
+            # Learnable PE: train jointly with model
+            model, learnable_pe = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg)
+            test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+            test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+            # Compute tokens using learned PE for discrepancy
+            train_tokens = _compute_tokens_learnable(train_samples, pe_cfg, learnable_pe, train_cfg.device)
+            test_tokens = _compute_tokens_learnable(test_samples, pe_cfg, learnable_pe, train_cfg.device)
+        else:
+            # Pre-compute tokens once for this PE config
+            _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
+            _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
+            _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
+
+            # Train and evaluate using pre-computed tokens (pe_cfg=None)
+            model = train_classifier(train_samples, val_samples, config.num_classes, train_cfg, pe_cfg=None)
+            test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+            test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
+            # Use pre-computed tokens for discrepancy calculation
+            train_tokens = [s.tokens for s in train_samples]
+            test_tokens = [s.tokens for s in test_samples]
 
         # Compute ID/OOD errors
-        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
         id_errors = [err for sz, err in test_error_by_size.items() if sz in train_sizes_set]
         ood_errors = [err for sz, err in test_error_by_size.items() if sz not in train_sizes_set]
         id_error = float(np.mean(id_errors)) if id_errors else 0.0
         ood_error = float(np.mean(ood_errors)) if ood_errors else 0.0
-
-        # Use pre-computed tokens for discrepancy calculation
-        train_tokens = [s.tokens for s in train_samples]
-        test_tokens = [s.tokens for s in test_samples]
 
         if discrepancy_mode == "proportional":
             discrepancy = discrepancy_set_proportional(

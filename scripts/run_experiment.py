@@ -46,8 +46,10 @@ def main() -> None:
         help="Size multiplier for merged graphs",
     )
     parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--cache_dir", type=str)
+    parser.add_argument("--output_suffix", type=str, default=None, help="Suffix to append to output filename")
     parser.add_argument(
         "--discrepancy_mode",
         choices=["uniform", "proportional", "all"],

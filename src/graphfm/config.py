@@ -48,7 +48,7 @@ def generate_config_filename(
     params_str = format_number(params)
 
     pe_str = f"{pe_cfg.kind}_k{pe_cfg.k}"
-    if pe_cfg.kind in ("proj", "spe") and pe_cfg.m > 0:
+    if pe_cfg.kind in ("proj", "spe", "spe_learnable") and pe_cfg.m > 0:
         pe_str += f"_m{pe_cfg.m}"
 
     return (
@@ -127,6 +127,8 @@ def merge_config_with_args(
         train_dict["device"] = args.device
     if hasattr(args, "model") and args.model is not None:
         train_dict["model"] = args.model
+    if hasattr(args, "epochs") and args.epochs is not None:
+        train_dict["epochs"] = args.epochs
     if hasattr(args, "pe_kind") and args.pe_kind is not None:
         pe_dict["kind"] = args.pe_kind
     if hasattr(args, "k") and args.k is not None:
