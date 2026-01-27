@@ -110,6 +110,7 @@ def main() -> None:
             merging_method=args.merging_method,
             discrepancy_mode=args.discrepancy_mode,
             cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+            output_suffix=args.output_suffix,
         )
         return
 

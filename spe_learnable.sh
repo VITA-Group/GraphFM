@@ -41,7 +41,8 @@ for K in "${K_VALUES[@]}"; do
       --sampling_mode "${SAMPLING_MODE}" \
       --discrepancy_mode "${DISCREPANCY_MODE}" \
       --graphon_type "${GRAPHON_TYPE}" \
-      --epochs "200" \
+      --epochs 200 \
+      --output_suffix "${TAG}" \
       > "${LOG}" 2>&1 &
 
     IDX=$((IDX + 1))

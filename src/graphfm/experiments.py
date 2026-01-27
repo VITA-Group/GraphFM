@@ -194,6 +194,7 @@ def run_size_shift(
     merging_method: Optional[OrderingMethod] = None,
     discrepancy_mode: str = "proportional",
     cache_dir: Optional[Path] = None,
+    output_suffix: Optional[str] = None,
 ) -> Dict:
     rng = np.random.default_rng(config.seed)
     if cache_dir is not None:
@@ -320,7 +321,8 @@ def run_size_shift(
     out_dir.mkdir(parents=True, exist_ok=True)
     lambda_tag = f"{config.lambda_mix:.2f}".replace(".", "p")
     merge_tag = f"_merge_{merging_method}" if merging_method else ""
-    out_name = f"size_shift_lambda_{lambda_tag}{merge_tag}.json"
+    suffix_tag = f"_{output_suffix}" if output_suffix else ""
+    out_name = f"size_shift_lambda_{lambda_tag}{merge_tag}{suffix_tag}.json"
     (out_dir / out_name).write_text(json.dumps(result, indent=2))
     return result
 
