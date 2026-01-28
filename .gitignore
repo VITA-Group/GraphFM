@@ -10,6 +10,6 @@ runs/
 .venv
 .cache/
 .claude
-CLAUDE.md
+*.md
 *.png
 .vscode/

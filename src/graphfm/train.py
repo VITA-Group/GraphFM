@@ -234,6 +234,12 @@ def _train_with_learnable_pe(
     opt = torch.optim.Adam(all_params, lr=config.lr, weight_decay=config.weight_decay)
     loss_fn = nn.CrossEntropyLoss()
 
+    # LR scheduling: warmup + cosine annealing
+    # warmup_epochs = min(5, config.epochs // 10)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     opt, T_max=max(1, config.epochs - warmup_epochs), eta_min=config.lr * 0.01
+    # )
+
     train_grouped = _group_by_size(train_samples, device)
     val_grouped = _group_by_size(val_samples, device)
 
@@ -252,29 +258,57 @@ def _train_with_learnable_pe(
         count = 0
 
         for n, (deltas, adjs, labels) in grouped.items():
-            Lambda, V = eigh_batch_for_learnable(deltas, pe_cfg.k)
-            tokens_list = learnable_pe(Lambda, V)
+            # Pre-compute eigendecomposition for the whole group (no grad required here)
+            # This is efficient on GPU
+            Lambda_all, V_all = eigh_batch_for_learnable(deltas, pe_cfg.k)
 
-            # Accumulate loss for the batch group before backward
-            batch_loss = torch.tensor(0.0, device=device)
-            batch_count = 0
+            # Create mini-batches
+            num_samples = deltas.shape[0]
+            batch_size = 32  # Use a reasonable mini-batch size for updates
+            
+            indices = torch.randperm(num_samples, device=device) if train else torch.arange(num_samples, device=device)
 
-            for i, tokens in enumerate(tokens_list):
-                if config.model == "gin":
-                    logits = model(tokens, adjs[i])
+            for start_idx in range(0, num_samples, batch_size):
+                end_idx = min(start_idx + batch_size, num_samples)
+                batch_idx = indices[start_idx:end_idx]
+
+                # Slice data for this mini-batch
+                Lambda_batch = Lambda_all[batch_idx]
+                V_batch = V_all[batch_idx]
+                adjs_batch = adjs[batch_idx]
+                labels_batch = labels[batch_idx]
+
+                # Forward pass through learnable PE (Fresh computation for gradients)
+                tokens_list = learnable_pe(Lambda_batch, V_batch)
+
+                # Compute loss for the batch
+                batch_loss = torch.tensor(0.0, device=device)
+                curr_batch_count = 0
+
+                for i, tokens in enumerate(tokens_list):
+                    if config.model == "gin":
+                        logits = model(tokens, adjs_batch[i])
+                    else:
+                        logits = model(tokens)
+                    
+                    loss = loss_fn(logits.unsqueeze(0), labels_batch[i].unsqueeze(0))
+                    batch_loss = batch_loss + loss
+                    curr_batch_count += 1
+
+                if train and curr_batch_count > 0:
+                    # Average loss over the mini-batch
+                    batch_loss = batch_loss / curr_batch_count
+                    
+                    opt.zero_grad()
+                    batch_loss.backward()
+                    opt.step()
+                    
+                    # Log the *summed* loss for reporting to match other logic (or just report avg * count)
+                    total_loss += batch_loss.item() * curr_batch_count
                 else:
-                    logits = model(tokens)
-                loss = loss_fn(logits.unsqueeze(0), labels[i].unsqueeze(0))
-                batch_loss = batch_loss + loss
-                batch_count += 1
-
-            if train and batch_count > 0:
-                opt.zero_grad()
-                batch_loss.backward()
-                opt.step()
-
-            total_loss += batch_loss.item()
-            count += batch_count
+                    total_loss += batch_loss.item()
+                
+                count += curr_batch_count
 
         return total_loss / max(count, 1)
 
