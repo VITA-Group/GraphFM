@@ -16,6 +16,8 @@ from .dataset import (
     generate_pe_sweep_dataset,
     generate_samples,
     load_dataset,
+    load_real_dataset,
+    resplit_by_size_gap,
 )
 from .graphon import (
     ControlledFourierGraphon,
@@ -165,6 +167,11 @@ def _compute_eigengap_stats_gpu(
     for n, group in by_size.items():
         deltas = np.stack([s.delta for s in group])
         deltas_t = torch.from_numpy(deltas).to(dev, dtype=torch.float32)
+
+        # Add small regularization for numerical stability
+        B = deltas_t.shape[0]
+        eye = torch.eye(n, device=dev, dtype=torch.float32).unsqueeze(0)
+        deltas_t = deltas_t + 1e-4 * eye
 
         # Batch eigenvalue computation
         evals = torch.linalg.eigvalsh(deltas_t)  # (B, n)
@@ -856,3 +863,219 @@ def run_perturb_graphon(
     (out_dir / "perturb_graphon_summary.json").write_text(json.dumps(summary, indent=2))
 
     return summary
+
+
+def run_real_merge_graph(
+    out_dir: Path,
+    dataset_name: str,
+    data_root: Path,
+    pe_cfg: PEConfig,
+    train_cfg: TrainConfig,
+    merging_method: OrderingMethod = "spectral",
+    merging_ratio: float = 0.5,
+    merging_size: float = 2.0,
+    seed: int = 0,
+    sampling_mode: SamplingMode = "uniform_value",
+    discrepancy_mode: str = "proportional",
+    resplit_gap: Optional[float] = None,
+    cache_dir: Optional[Path] = None,
+) -> Dict:
+    """Run merge_graph experiment on real TUDataset.
+
+    Args:
+        out_dir: Output directory
+        dataset_name: Name of TUDataset
+        data_root: Root directory for dataset
+        pe_cfg: PE config
+        train_cfg: Training config
+        merging_method: Ordering method for graphon estimation
+        merging_ratio: Ratio of merged graphs to original training graphs
+        merging_size: Size multiplier for merged graphs (relative to max train size)
+        seed: Random seed
+        sampling_mode: Sampling mode for synthesis
+        discrepancy_mode: Discrepancy calculation mode
+        resplit_gap: If set, resplit train/test by size gap (e.g., 2.0 means test min >= 2x train max)
+        cache_dir: Optional cache directory for resplit indices
+
+    Returns:
+        Results dictionary
+    """
+    rng = np.random.default_rng(seed)
+
+    # Load dataset
+    print(f"Loading {dataset_name}...")
+    train_samples, val_samples, test_samples, num_classes = load_real_dataset(
+        dataset_name, data_root, seed=seed
+    )
+
+    print(
+        "Loaded dataset stats (before resplit):",
+        "train", _format_size_stats(train_samples),
+        "val", _format_size_stats(val_samples),
+        "test", _format_size_stats(test_samples),
+    )
+
+    # Resplit by size gap if requested
+    if resplit_gap is not None:
+        print(f"Resplitting by size gap (gap_ratio={resplit_gap})...")
+        all_samples = train_samples + val_samples + test_samples
+        train_samples, val_samples, test_samples = resplit_by_size_gap(
+            all_samples,
+            gap_ratio=resplit_gap,
+            val_ratio=0.1,
+            seed=seed,
+            cache_dir=cache_dir,
+            dataset_name=dataset_name,
+        )
+        # Log size statistics after resplit
+        train_sizes = [s.adjacency.shape[0] for s in train_samples]
+        test_sizes = [s.adjacency.shape[0] for s in test_samples]
+        if train_sizes and test_sizes:
+            print(
+                f"After resplit: train max size = {max(train_sizes)}, "
+                f"test min size = {min(test_sizes)}, "
+                # f"actual gap ratio = {min(test_sizes) / max(train_sizes):.2f}"
+            )
+        print(
+            "Resplit dataset stats:",
+            "train", _format_size_stats(train_samples),
+            "val", _format_size_stats(val_samples),
+            "test", _format_size_stats(test_samples),
+        )
+
+    # Handle learnable PE case
+    is_learnable_pe = pe_cfg.kind == "spe_learnable"
+    learnable_pe = None
+
+    if not is_learnable_pe:
+        # Pre-compute tokens for base samples
+        _attach_tokens_to_samples(train_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(val_samples, pe_cfg, train_cfg.device)
+        _attach_tokens_to_samples(test_samples, pe_cfg, train_cfg.device)
+
+    # Define exponentially growing size bins: 0-128, 128-256, 256-512, 512-1024, ...
+    # Augmentation graphs are generated at bin_upper * merging_size
+    BASE_BIN = 128
+
+    def get_bin_upper(size: int) -> int:
+        """Get the upper bound of the exponential bin for a given size.
+        Bins: [0,128], (128,256], (256,512], (512,1024], ...
+        """
+        if size <= BASE_BIN:
+            return BASE_BIN
+        # Find the smallest power of 2 times BASE_BIN that is >= size
+        bin_upper = BASE_BIN
+        while bin_upper < size:
+            bin_upper *= 2
+        return bin_upper
+
+    # Generate merged graphs
+    merged = []
+    bin_stats = {}  # For logging
+
+    if merging_ratio > 0:
+        print(f"Generating merged graphs using exponential bins (base={BASE_BIN}, merging_size={merging_size})...")
+        for c in range(num_classes):
+            class_samples = [s for s in train_samples if s.label == c]
+            class_graphs = [s.adjacency for s in class_samples]
+
+            if len(class_graphs) == 0:
+                continue
+
+            # Count graphs per bin
+            from collections import Counter
+            bin_counts = Counter(get_bin_upper(g.shape[0]) for g in class_graphs)
+            total_in_class = len(class_graphs)
+            num_merged_for_class = int(total_in_class * merging_ratio)
+
+            if num_merged_for_class == 0:
+                continue
+
+            # Estimate step graphon for this class (once)
+            step = estimate_step_graphon(
+                class_graphs, bins=16, method=merging_method, device=train_cfg.device
+            )
+
+            # Distribute merged graphs across bins proportionally
+            for bin_upper, count in sorted(bin_counts.items()):
+                # Number of merged graphs for this bin (proportional to bin count)
+                num_for_bin = max(1, int(num_merged_for_class * count / total_in_class))
+                # Target size for augmentation is bin_upper * merging_size
+                target_size = int(bin_upper * merging_size)
+
+                bin_key = f"c{c}_b{bin_upper}"
+                bin_stats[bin_key] = {"n": count, "aug": num_for_bin, "size": target_size}
+
+                for _ in range(num_for_bin):
+                    a = synthesize_from_step(
+                        step, n=target_size, rng=rng, sampling_mode=sampling_mode
+                    )
+                    delta = normalize_shift_operator(a)
+                    merged.append(GraphSample(adjacency=a, delta=delta, label=c, tokens=None))
+
+        print(f"Bin stats: {bin_stats}")
+    
+    # Attach tokens to merged samples if not learnable
+    if merged and not is_learnable_pe:
+        _attach_tokens_to_samples(merged, pe_cfg, train_cfg.device)
+        
+    train_samples_augmented = train_samples + merged
+    print(f"Augmented training set: {len(train_samples)} original + {len(merged)} merged = {len(train_samples_augmented)} total")
+
+    # Train
+    if is_learnable_pe:
+        model, learnable_pe = train_classifier(train_samples_augmented, val_samples, num_classes, train_cfg, pe_cfg)
+        train_error = evaluate_classifier(model, train_samples_augmented, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg, learnable_pe=learnable_pe)
+        
+        # Compute tokens for discrepancy
+        train_tokens = _compute_tokens_learnable(train_samples_augmented, pe_cfg, learnable_pe, train_cfg.device)
+        test_tokens = _compute_tokens_learnable(test_samples, pe_cfg, learnable_pe, train_cfg.device)
+    else:
+        model = train_classifier(train_samples_augmented, val_samples, num_classes, train_cfg, pe_cfg=None)
+        train_error = evaluate_classifier(model, train_samples_augmented, train_cfg, pe_cfg=None)
+        test_error = evaluate_classifier(model, test_samples, train_cfg, pe_cfg=None)
+        test_error_by_size = evaluate_classifier_by_size(model, test_samples, train_cfg, pe_cfg=None)
+        
+        train_tokens = [s.tokens for s in train_samples_augmented]
+        test_tokens = [s.tokens for s in test_samples]
+    
+    # Compute discrepancy
+    if discrepancy_mode == "proportional":
+        discrepancy = discrepancy_set_proportional(
+            train_tokens, test_tokens, total_samples=128 * len(train_samples_augmented), projections=50, rng=rng
+        )
+    elif discrepancy_mode == "uniform":
+        discrepancy = discrepancy_set(
+            train_tokens, test_tokens, samples_per_graph=128, projections=50, rng=rng
+        )
+    else:
+        discrepancy = 0.0
+
+    # Metrics
+    result = {
+        "dataset": dataset_name,
+        "train_error": train_error,
+        "test_error": test_error,
+        "test_error_by_size": {str(k): v for k, v in test_error_by_size.items()},
+        "discrepancy_set": discrepancy,
+        "merging_method": merging_method,
+        "merging_ratio": merging_ratio,
+        "merging_size": merging_size,
+        "num_original_train": len(train_samples),
+        "num_merged": len(merged),
+        "bin_stats": bin_stats,
+        "pe_kind": pe_cfg.kind,
+        "resplit_gap": resplit_gap,
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ratio_tag = f"{merging_ratio:.2f}".replace(".", "p")
+    size_tag = f"{merging_size:.1f}".replace(".", "p")
+    pe_tag = pe_cfg.kind
+    gap_tag = f"_gap{resplit_gap:.1f}".replace(".", "p") if resplit_gap else ""
+    out_name = f"real_merge_{dataset_name}_{merging_method}_r{ratio_tag}_s{size_tag}_{pe_tag}{gap_tag}.json"
+    (out_dir / out_name).write_text(json.dumps(result, indent=2))
+    
+    return result

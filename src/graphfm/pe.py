@@ -86,6 +86,21 @@ def compute_pe(delta: np.ndarray, cfg: PEConfig) -> np.ndarray:
 # ============ GPU Batch Versions ============
 
 
+def _regularize_for_eigh(deltas: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
+    """Add small regularization to diagonal for numerical stability.
+
+    Args:
+        deltas: (B, n, n) batch of matrices
+        eps: regularization value to add to diagonal
+
+    Returns:
+        Regularized matrices (B, n, n)
+    """
+    B, n, _ = deltas.shape
+    eye = torch.eye(n, device=deltas.device, dtype=deltas.dtype).unsqueeze(0)
+    return deltas + eps * eye
+
+
 def eig_pe_batch(deltas: torch.Tensor, k: int) -> torch.Tensor:
     """Batch eigenvalue PE on GPU.
 
@@ -94,12 +109,17 @@ def eig_pe_batch(deltas: torch.Tensor, k: int) -> torch.Tensor:
         k: number of eigenvectors to keep
 
     Returns:
-        (B, n, k) batch of positional encodings
+        (B, n, k) batch of positional encodings (padded with zeros if n < k)
     """
     B, n, _ = deltas.shape
-    k = min(k, n)
-    _, evecs = torch.linalg.eigh(deltas)  # (B, n, n)
-    evecs_k = evecs[:, :, :k] * (n ** 0.5)  # (B, n, k)
+    k_eff = min(k, n)
+    deltas_reg = _regularize_for_eigh(deltas)
+    _, evecs = torch.linalg.eigh(deltas_reg)  # (B, n, n)
+    evecs_k = evecs[:, :, :k_eff] * (n ** 0.5)  # (B, n, k_eff)
+    # Pad with zeros if n < k
+    if k_eff < k:
+        pad = torch.zeros(B, n, k - k_eff, device=deltas.device, dtype=deltas.dtype)
+        evecs_k = torch.cat([evecs_k, pad], dim=2)
     return evecs_k
 
 
@@ -125,12 +145,13 @@ def proj_pe_batch(
     if m <= 0:
         raise ValueError("proj_pe_batch requires m > 0.")
     B, n, _ = deltas.shape
-    k = min(k, n)
+    k_eff = min(k, n)
     device = deltas.device
     dtype = deltas.dtype
 
-    _, evecs = torch.linalg.eigh(deltas)  # (B, n, n)
-    u = evecs[:, :, :k] * (n ** 0.5)  # (B, n, k)
+    deltas_reg = _regularize_for_eigh(deltas)
+    _, evecs = torch.linalg.eigh(deltas_reg)  # (B, n, n)
+    u = evecs[:, :, :k_eff] * (n ** 0.5)  # (B, n, k_eff)
 
     if generator is None:
         generator = torch.Generator(device=device)
@@ -170,13 +191,14 @@ def spe_pe_batch(
     if m <= 0:
         raise ValueError("spe_pe_batch requires m > 0.")
     B, n, _ = deltas.shape
-    k = min(k, n)
+    k_eff = min(k, n)
     device = deltas.device
     dtype = deltas.dtype
 
-    evals, evecs = torch.linalg.eigh(deltas)  # (B, n), (B, n, n)
-    evals_k = evals[:, :k]  # (B, k)
-    evecs_k = evecs[:, :, :k]  # (B, n, k)
+    deltas_reg = _regularize_for_eigh(deltas)
+    evals, evecs = torch.linalg.eigh(deltas_reg)  # (B, n), (B, n, n)
+    evals_k = evals[:, :k_eff]  # (B, k_eff)
+    evecs_k = evecs[:, :, :k_eff]  # (B, n, k_eff)
 
     # g = sigmoid filter: (B, k)
     g = 1.0 / (1.0 + torch.exp(-spe_alpha * (evals_k - spe_tau)))
@@ -369,11 +391,18 @@ def eigh_batch_for_learnable(
         Lambda: [B, k] eigenvalues
         V: [B, n, k] eigenvectors (scaled by sqrt(n))
     """
-    _, n, _ = deltas.shape
-    k = min(k, n)
-    evals, evecs = torch.linalg.eigh(deltas)
-    Lambda = evals[:, :k]  # [B, k]
-    V = evecs[:, :, :k] * (n**0.5)  # [B, n, k]
+    B, n, _ = deltas.shape
+    k_eff = min(k, n)
+    deltas_reg = _regularize_for_eigh(deltas)
+    evals, evecs = torch.linalg.eigh(deltas_reg)
+    Lambda = evals[:, :k_eff]  # [B, k_eff]
+    V = evecs[:, :, :k_eff] * (n**0.5)  # [B, n, k_eff]
+    # Pad with zeros if n < k
+    if k_eff < k:
+        Lambda_pad = torch.zeros(B, k - k_eff, device=deltas.device, dtype=deltas.dtype)
+        Lambda = torch.cat([Lambda, Lambda_pad], dim=1)
+        V_pad = torch.zeros(B, n, k - k_eff, device=deltas.device, dtype=deltas.dtype)
+        V = torch.cat([V, V_pad], dim=2)
     return Lambda, V
 
 

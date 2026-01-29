@@ -5,7 +5,7 @@ from pathlib import Path
 
 from graphfm.config import load_config, merge_config_with_args
 from graphfm.dataset import DatasetConfig
-from graphfm.experiments import run_merge_graph, run_pe_sweep, run_perturb_graphon, run_size_shift
+from graphfm.experiments import run_merge_graph, run_pe_sweep, run_perturb_graphon, run_size_shift, run_real_merge_graph
 from graphfm.pe import PEConfig
 from graphfm.train import TrainConfig
 
@@ -14,7 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--graphon_type", type=str, default="controlled_fourier")
     parser.add_argument("--config", type=str, help="Path to YAML config file")
-    parser.add_argument("--experiment", choices=["size_shift", "pe_sweep", "merge_graph", "perturb_graphon"], required=True)
+    parser.add_argument("--experiment", choices=["size_shift", "pe_sweep", "merge_graph", "perturb_graphon", "real_merge"], required=True)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--pe_kind", type=str, default=None)
     parser.add_argument("--k", type=int, default=None)
@@ -75,6 +75,16 @@ def main() -> None:
         default=0.1,
         help="Maximum L2 distance at perturb_level=1.0",
     )
+    # Real dataset arguments
+    parser.add_argument("--dataset_name", type=str, default="IMDB-BINARY")
+    parser.add_argument("--data_root", type=str, default="./data")
+    parser.add_argument(
+        "--resplit_gap",
+        type=float,
+        default=None,
+        help="Resplit train/test by size gap (e.g., 2.0 means test min >= 2x train max)",
+    )
+    
     args = parser.parse_args()
 
     # Load config from file or use defaults
@@ -92,6 +102,7 @@ def main() -> None:
         train_cfg = TrainConfig(
             model=args.model if args.model is not None else "deepsets",
             device=args.device if args.device is not None else "cpu",
+            epochs=args.epochs if args.epochs is not None else 50,
         )
         pe_cfg = PEConfig(
             kind=args.pe_kind if args.pe_kind is not None else "eig",
@@ -140,6 +151,23 @@ def main() -> None:
             merging_ratio=args.merging_ratio,
             merging_size=args.merging_size,
             discrepancy_mode=args.discrepancy_mode,
+            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+        )
+        return
+        
+    if args.experiment == "real_merge":
+        run_real_merge_graph(
+            out_dir=out_dir,
+            dataset_name=args.dataset_name,
+            data_root=Path(args.data_root),
+            pe_cfg=pe_cfg,
+            train_cfg=train_cfg,
+            merging_method=args.merging_method if args.merging_method else "spectral",
+            merging_ratio=args.merging_ratio,
+            merging_size=args.merging_size,
+            seed=exp_cfg.seed,
+            sampling_mode=args.sampling_mode,
+            resplit_gap=args.resplit_gap,
             cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         )
         return

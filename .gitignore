@@ -13,3 +13,4 @@ runs/
 *.md
 *.png
 .vscode/
+data/

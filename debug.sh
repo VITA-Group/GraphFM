@@ -1,16 +1,29 @@
-OUTPUT_DIR="runs/budget100k_deepsets/debug"
-LAMBDA=0.0
-TAG=$(printf "%.2f" "${LAMBDA}" | tr '.' 'p')
-LOG="${OUTPUT_DIR}/size_shift_lambda_${TAG}.log"
-DEVICE="cuda:6"
+#!/usr/bin/env bash
 
-python scripts/run_experiment.py \
-   --experiment size_shift \
-   --output runs/debug_spe_learnable \
-   --pe_kind spe_learnable \
-   --k 16 \
-   --m 16 \
-   --lambda_mix 0.5 \
-   --device cuda:6 \
-   --config configs/budget100k_deepsets_h256_ep100_params200k_eig_k32.yaml \
-   --discrepancy_mode proportional
+DATASET="IMDB-BINARY" # IMDB-BINARY, REDDIT-BINARY, COLLAB
+mkdir -p runs/debug_real_merge/merge_${DATASET}
+
+DEVICE_LIST=(0 1 2 3 4 5)
+MERGING_RATIOS=(0.00 0.01 0.02 0.03 0.04 0.05)
+
+for idx in "${!MERGING_RATIOS[@]}"; do
+  MERGING_RATIO="${MERGING_RATIOS[$idx]}"
+  DEVICE="${DEVICE_LIST[$((idx % ${#DEVICE_LIST[@]}))]}"
+  echo "Starting merge ratio ${MERGING_RATIO} on cuda:${DEVICE}..."
+  python scripts/run_experiment.py \
+    --experiment real_merge \
+    --dataset_name "${DATASET}" \
+    --output runs/debug_real_merge/merge_${DATASET} \
+    --merging_method usvt \
+    --merging_ratio ${MERGING_RATIO} \
+    --merging_size 2.0 \
+    --cache_dir ./.cache \
+    --resplit_gap 2.0 \
+    --epochs 100 \
+    --device "cuda:${DEVICE}" \
+    --pe_kind eig \
+    --k 16 > runs/debug_real_merge/merge_${DATASET}/merge_usvt_${MERGING_RATIO}.log 2>&1 &
+done
+
+wait
+echo "All experiments finished. Check logs in runs/debug_real_merge/"

@@ -386,3 +386,289 @@ def generate_datasets(
     )
     save_dataset(cache_path, train_samples, val_samples, test_samples)
     return cache_path
+
+
+def _resplit_cache_path(
+    cache_dir: Path,
+    dataset_name: str,
+    gap_ratio: float,
+    val_ratio: float,
+    seed: int,
+    num_samples: int,
+) -> Path:
+    """Generate cache path for resplit indices."""
+    params = {
+        "dataset": dataset_name,
+        "gap_ratio": gap_ratio,
+        "val_ratio": val_ratio,
+        "seed": seed,
+        "num_samples": num_samples,
+    }
+    key = _cache_key(params)
+    gap_tag = f"{gap_ratio:.1f}".replace(".", "p")
+    name = f"resplit_{dataset_name}_gap{gap_tag}_seed{seed}_{key}.npz"
+    return cache_dir / name
+
+
+def _compute_resplit_indices(
+    samples: List[GraphSample],
+    gap_ratio: float,
+    val_ratio: float,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute train/val/test indices for size-gap resplit.
+
+    Finds split where:
+    - Train and test sizes are non-overlapping (max train < min test)
+    - median(test_sizes) ≈ gap_ratio × median(train_sizes)
+
+    Returns:
+        (train_indices, val_indices, test_indices) as numpy arrays
+    """
+    if not samples:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    rng = np.random.default_rng(seed)
+
+    # Get sizes and sort samples by size
+    sizes = np.array([s.adjacency.shape[0] for s in samples])
+    sorted_indices = np.argsort(sizes)
+    sorted_sizes = sizes[sorted_indices]
+
+    # Find best split point that minimizes |median(test)/median(train) - gap_ratio|
+    n = len(samples)
+    best_split_idx = None
+    best_ratio_diff = float('inf')
+
+    for i in range(1, n):
+        # Check non-overlap: train_max < test_min
+        train_max = sorted_sizes[i - 1]
+        test_min = sorted_sizes[i]
+        if train_max >= test_min:
+            continue  # Skip overlapping sizes
+
+        # Compute median ratio
+        train_median = np.median(sorted_sizes[:i])
+        test_median = np.median(sorted_sizes[i:])
+        actual_ratio = test_median / train_median
+        ratio_diff = abs(actual_ratio - gap_ratio)
+
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_split_idx = i
+
+    # Log achieved ratio if found
+    if best_split_idx is not None:
+        split_idx = best_split_idx
+        train_median = np.median(sorted_sizes[:split_idx])
+        test_median = np.median(sorted_sizes[split_idx:])
+        print(
+            f"Resplit: train median={train_median:.1f}, test median={test_median:.1f}, "
+            f"ratio={test_median/train_median:.2f} (target={gap_ratio})",
+            flush=True,
+        )
+    else:
+        split_idx = n // 2
+        print(
+            f"Warning: Could not find non-overlapping split. "
+            f"Using 50/50 split. Size range: {sorted_sizes[0]}-{sorted_sizes[-1]}",
+            flush=True,
+        )
+
+    # Split into train+val and test (using original indices)
+    train_val_orig_indices = sorted_indices[:split_idx].tolist()
+    test_orig_indices = sorted_indices[split_idx:].tolist()
+
+    # Stratified split of train+val by label
+    by_label: Dict[int, List[int]] = {}
+    for orig_idx in train_val_orig_indices:
+        label = samples[orig_idx].label
+        if label not in by_label:
+            by_label[label] = []
+        by_label[label].append(orig_idx)
+
+    train_indices = []
+    val_indices = []
+
+    for label, class_indices in by_label.items():
+        rng.shuffle(class_indices)
+        n_val = max(1, int(len(class_indices) * val_ratio))
+        n_train = len(class_indices) - n_val
+        train_indices.extend(class_indices[:n_train])
+        val_indices.extend(class_indices[n_train:])
+
+    # Shuffle final indices
+    rng.shuffle(train_indices)
+    rng.shuffle(val_indices)
+    rng.shuffle(test_orig_indices)
+
+    return (
+        np.array(train_indices, dtype=np.int64),
+        np.array(val_indices, dtype=np.int64),
+        np.array(test_orig_indices, dtype=np.int64),
+    )
+
+
+def resplit_by_size_gap(
+    samples: List[GraphSample],
+    gap_ratio: float = 2.0,
+    val_ratio: float = 0.1,
+    seed: int = 0,
+    cache_dir: Optional[Path] = None,
+    dataset_name: Optional[str] = None,
+) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample]]:
+    """Resplit samples to ensure size gap between train and test.
+
+    Sorts all samples by size, then splits so that:
+    - Train contains smaller graphs
+    - Test contains larger graphs
+    - max(train_sizes) < min(test_sizes) (non-overlapping)
+    - median(test_sizes) ≈ gap_ratio × median(train_sizes)
+
+    Args:
+        samples: All graph samples
+        gap_ratio: Target ratio between median test size and median train size
+        val_ratio: Fraction of train for validation
+        seed: Random seed
+        cache_dir: Optional cache directory for storing resplit indices
+        dataset_name: Dataset name for cache key (required if cache_dir is set)
+
+    Returns:
+        (train_samples, val_samples, test_samples)
+    """
+    if not samples:
+        return [], [], []
+
+    # Try to load from cache
+    cache_path = None
+    if cache_dir is not None and dataset_name is not None:
+        cache_path = _resplit_cache_path(
+            cache_dir, dataset_name, gap_ratio, val_ratio, seed, len(samples)
+        )
+        if cache_path.exists():
+            print(f"Loading resplit indices from cache: {cache_path}")
+            data = np.load(cache_path)
+            train_indices = data["train_indices"]
+            val_indices = data["val_indices"]
+            test_indices = data["test_indices"]
+            return (
+                [samples[i] for i in train_indices],
+                [samples[i] for i in val_indices],
+                [samples[i] for i in test_indices],
+            )
+
+    # Compute resplit indices
+    train_indices, val_indices, test_indices = _compute_resplit_indices(
+        samples, gap_ratio, val_ratio, seed
+    )
+
+    # Save to cache
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Saving resplit indices to cache: {cache_path}")
+        np.savez(
+            cache_path,
+            train_indices=train_indices,
+            val_indices=val_indices,
+            test_indices=test_indices,
+        )
+
+    return (
+        [samples[i] for i in train_indices],
+        [samples[i] for i in val_indices],
+        [samples[i] for i in test_indices],
+    )
+
+
+def load_real_dataset(
+    name: str,
+    root: Path,
+    seed: int = 0,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
+) -> Tuple[List[GraphSample], List[GraphSample], List[GraphSample], int]:
+    """Load a TUDataset and convert to GraphSamples.
+    
+    Args:
+        name: Name of TUDataset (e.g., "IMDB-BINARY", "MUTAG")
+        root: Root directory for dataset storage
+        seed: Random seed for splitting
+        val_ratio: Fraction of data for validation
+        test_ratio: Fraction of data for testing
+
+    Returns:
+        Tuple of (train_samples, val_samples, test_samples, num_classes)
+    """
+    try:
+        from torch_geometric.datasets import TUDataset
+        from torch_geometric.utils import to_dense_adj
+    except ImportError:
+        raise ImportError("torch_geometric is required for real datasets. Please install it.")
+
+    import torch
+    
+    # Load dataset
+    dataset = TUDataset(root=str(root), name=name)
+    num_classes = dataset.num_classes
+    
+    samples: List[GraphSample] = []
+    
+    for data in tqdm(dataset, desc=f"Loading {name}"):
+        # Convert to dense adjacency (N, N)
+        # to_dense_adj returns (batch_size, N, N), here batch_size=1
+        adj = to_dense_adj(data.edge_index, max_num_nodes=data.num_nodes)[0].numpy()
+        
+        # Ensure it's symmetric (usually is for TUDataset, but good to be safe)
+        # Real datasets might be directed, but GraphFM assumes undirected for now (PEs etc)
+        # We symmetrize by OR-ing edges (if binary) or averaging (if weighted)
+        # TUDatasets are typically unweighted binary.
+        adj = np.maximum(adj, adj.T)
+        
+        # Compute normalized shift operator
+        delta = normalize_shift_operator(adj)
+        
+        label = int(data.y.item()) if data.y is not None else 0
+        
+        samples.append(GraphSample(
+            adjacency=adj,
+            delta=delta,
+            label=label,
+            tokens=None
+        ))
+
+    # Stratified split
+    rng = np.random.default_rng(seed)
+    
+    # Group by label
+    by_label: Dict[int, List[GraphSample]] = {}
+    for s in samples:
+        if s.label not in by_label:
+            by_label[s.label] = []
+        by_label[s.label].append(s)
+        
+    train_samples = []
+    val_samples = []
+    test_samples = []
+    
+    for label, class_samples in by_label.items():
+        rng.shuffle(class_samples)
+        n = len(class_samples)
+        n_val = int(n * val_ratio)
+        n_test = int(n * test_ratio)
+        n_train = n - n_val - n_test
+        
+        # Ensure at least one train sample if possible, unless dataset is tiny
+        if n_train <= 0 and n > 0:
+             # Fallback: simple split
+             train_samples.extend(class_samples)
+             continue
+
+        train_samples.extend(class_samples[:n_train])
+        val_samples.extend(class_samples[n_train:n_train + n_val])
+        test_samples.extend(class_samples[n_train + n_val:])
+    
+    rng.shuffle(train_samples)
+    rng.shuffle(val_samples)
+    rng.shuffle(test_samples)
+    
+    return train_samples, val_samples, test_samples, num_classes

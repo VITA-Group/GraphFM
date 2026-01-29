@@ -62,22 +62,33 @@ def plot_perturb_graphon(results: List[Dict], output_path: Path, title: str = ""
         for level, l2 in zip(perturb_levels, avg_l2_distances)
     ]
 
+    label_fs = 22
+    tick_fs = 20
+    legend_fs = 20
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
     x = np.arange(len(perturb_levels))
     width = 0.6
 
     # Plot lines
-    ax.plot(x, test_errors, "s-", color="#d62728", label="test_error", linewidth=2, markersize=8)
-    ax.plot(x, id_errors, "^--", color="#2ca02c", label="id_error (original)", linewidth=1.5, markersize=7)
-    ax.plot(x, ood_errors, "v--", color="#ff7f0e", label="ood_error (perturbed)", linewidth=1.5, markersize=7)
-    ax.axhline(y=train_errors[0], color="#1f77b4", linestyle=":", label=f"train_error ({train_errors[0]:.3f})", linewidth=1.5)
+    ax.plot(x, test_errors, "s-", color="#d62728", label="Test Error", linewidth=2, markersize=8)
+    ax.plot(x, id_errors, "^--", color="#2ca02c", label="ID Error (Original)", linewidth=1.5, markersize=7)
+    ax.plot(x, ood_errors, "v--", color="#ff7f0e", label="OOD Error (Perturbed)", linewidth=1.5, markersize=7)
+    ax.axhline(
+        y=train_errors[0],
+        color="#1f77b4",
+        linestyle=":",
+        label=f"Train Error ({train_errors[0]:.3f})",
+        linewidth=1.5,
+    )
 
-    ax.set_xlabel("Perturbation Level (with avg L2 distance)", fontsize=12)
-    ax.set_ylabel("Error", fontsize=12)
+    ax.set_xlabel("Perturbation Level (avg L2 distance)", fontsize=label_fs)
+    ax.set_ylabel("Error", fontsize=label_fs)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=10)
-    ax.legend(loc="upper left", fontsize=10)
+    ax.set_xticklabels(x_labels, fontsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=tick_fs)
+    ax.legend(loc="upper left", fontsize=legend_fs)
     ax.grid(True, alpha=0.3)
 
     # Set y-axis limits with some padding
@@ -86,11 +97,7 @@ def plot_perturb_graphon(results: List[Dict], output_path: Path, title: str = ""
     y_max = min(1, max(all_errors) + 0.05)
     ax.set_ylim(y_min, y_max)
 
-    if title:
-        ax.set_title(title, fontsize=14)
-    else:
-        lambda_mix = results[0].get("lambda_mix", "?")
-        ax.set_title(f"Perturb Graphon: Test Error vs Perturbation Level (lambda_mix={lambda_mix})", fontsize=14)
+    ax.tick_params(axis="x", labelsize=tick_fs)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
@@ -102,6 +109,10 @@ def plot_multi_lambda(
     output_path: Path,
 ) -> None:
     """Plot results for multiple lambda_mix values on the same plot."""
+    label_fs = 22
+    tick_fs = 20
+    legend_fs = 20
+
     fig, ax = plt.subplots(figsize=(12, 7))
 
     colors = plt.cm.viridis(np.linspace(0, 1, len(results_by_lambda)))
@@ -114,7 +125,15 @@ def plot_multi_lambda(
         # Create x-axis values
         x = np.arange(len(perturb_levels))
 
-        ax.plot(x, test_errors, "o-", color=color, label=f"lambda_mix={lambda_mix:.1f}", linewidth=2, markersize=6)
+        ax.plot(
+            x,
+            test_errors,
+            "o-",
+            color=color,
+            label=rf"$\lambda$={lambda_mix:.1f}",
+            linewidth=2,
+            markersize=6,
+        )
 
     # Use first result set for x-axis labels
     first_results = list(results_by_lambda.values())[0]
@@ -126,14 +145,14 @@ def plot_multi_lambda(
     ]
 
     x = np.arange(len(perturb_levels))
-    ax.set_xlabel("Perturbation Level (with avg L2 distance)", fontsize=12)
-    ax.set_ylabel("Test Error", fontsize=12)
+    ax.set_xlabel("Perturbation Level (avg L2 distance)", fontsize=label_fs)
+    ax.set_ylabel("Test Error", fontsize=label_fs)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=10)
-    ax.legend(loc="upper left", fontsize=10)
+    ax.set_xticklabels(x_labels, fontsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=tick_fs)
+    ax.legend(loc="upper left", fontsize=legend_fs)
     ax.grid(True, alpha=0.3)
-
-    ax.set_title("Perturb Graphon: Test Error vs Perturbation Level (multiple lambda_mix)", fontsize=14)
+    ax.tick_params(axis="x", labelsize=tick_fs)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
