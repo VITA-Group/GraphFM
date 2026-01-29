@@ -74,10 +74,10 @@ def plot_single(rows: List[Tuple[float, float, float, float, float, float]], out
     ax1.tick_params(axis="x", labelsize=tick_fs)
 
     ax2 = ax1.twinx()
-    # ax2.plot(lambdas, train_error, "d-.", color="#2ca02c", label="Train Error")
-    # ax2.plot(lambdas, test_error, "s--", color="#d62728", label="Test Error")
-    ax2.plot(lambdas, id_error, "^:", color="#9467bd", label="ID Error")
-    ax2.plot(lambdas, ood_error, "v:", color="#ff7f0e", label="OOD Error")
+    ax2.plot(lambdas, train_error, "d-.", color="#2ca02c", label="Train Error")
+    ax2.plot(lambdas, test_error, "s--", color="#d62728", label="Test Error")
+    # ax2.plot(lambdas, id_error, "^:", color="#9467bd", label="ID Error")
+    # ax2.plot(lambdas, ood_error, "v:", color="#ff7f0e", label="OOD Error")
     ax2.set_ylabel("Error", color="#333333", fontsize=label_fs)
     ax2.tick_params(axis="y", labelcolor="#333333", labelsize=tick_fs)
     ax2.legend(loc="upper right", fontsize=legend_fs)
@@ -99,55 +99,37 @@ def plot_compare(
     tick_fs = 20
     legend_fs = 20
 
-    disc_min, disc_max = _global_limits([discrepancy_a, discrepancy_b])
-    err_min, err_max = _global_limits(
-        [train_error_a, test_error_a, id_error_a, ood_error_a,
-         train_error_b, test_error_b, id_error_b, ood_error_b]
+    err_min, err_max = _global_limits([test_error_a, test_error_b])
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.plot(
+        lambdas_a,
+        test_error_a,
+        marker="s",
+        linestyle="--",
+        color="#d62728",
+        label="w/o Merging",
+        linewidth=2,
+    )
+    ax.plot(
+        lambdas_b,
+        test_error_b,
+        marker="o",
+        linestyle="-",
+        color="#1f77b4",
+        label="w/ Merging",
+        linewidth=2,
     )
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=False)
-
-    ax1 = axes[0]
-    ax1.plot(lambdas_a, discrepancy_a, "o-", color="#1f77b4", label="Discrepancy")
-    ax1.set_xlabel(r"$\lambda$", fontsize=label_fs)
-    ax1.set_ylabel("Discrepancy", color="#1f77b4", fontsize=label_fs)
-    ax1.tick_params(axis="y", labelcolor="#1f77b4", labelsize=tick_fs)
-    ax1.tick_params(axis="x", labelsize=tick_fs)
-    if disc_min is not None and disc_max is not None:
-        ax1.set_ylim(disc_min, disc_max)
-    ax1b = ax1.twinx()
-    ax1b.plot(lambdas_a, train_error_a, "d-.", color="#2ca02c", label="Train Error")
-    ax1b.plot(lambdas_a, test_error_a, "s--", color="#d62728", label="Test Error")
-    ax1b.plot(lambdas_a, id_error_a, "^:", color="#9467bd", label="ID Error")
-    ax1b.plot(lambdas_a, ood_error_a, "v:", color="#ff7f0e", label="OOD Error")
-    # ax1b.plot(lambdas_a, test_error_a - train_error_a, "h--", color="#17becf", label="gap")
-
-    ax1b.set_ylabel("Error", color="#333333", fontsize=label_fs)
-    ax1b.tick_params(axis="y", labelcolor="#333333", labelsize=tick_fs)
-    ax1b.legend(loc="upper right", fontsize=legend_fs)
+    ax.set_xlabel(r"$\lambda$", fontsize=label_fs)
+    ax.set_ylabel("Test Error", fontsize=label_fs)
+    ax.tick_params(axis="x", labelsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=tick_fs)
+    ax.legend(loc="upper right", fontsize=legend_fs)
     if err_min is not None and err_max is not None:
-        ax1b.set_ylim(err_min, err_max)
-
-    ax2 = axes[1]
-    ax2.plot(lambdas_b, discrepancy_b, "o-", color="#1f77b4", label="Discrepancy")
-    ax2.set_xlabel(r"$\lambda$", fontsize=label_fs)
-    ax2.set_ylabel("Discrepancy", color="#1f77b4", fontsize=label_fs)
-    ax2.tick_params(axis="y", labelcolor="#1f77b4", labelsize=tick_fs)
-    ax2.tick_params(axis="x", labelsize=tick_fs)
-    if disc_min is not None and disc_max is not None:
-        ax2.set_ylim(disc_min, disc_max)
-    ax2b = ax2.twinx()
-    ax2b.plot(lambdas_b, train_error_b, "d-.", color="#2ca02c", label="Train Error")
-    ax2b.plot(lambdas_b, test_error_b, "s--", color="#d62728", label="Test Error")
-    ax2b.plot(lambdas_b, id_error_b, "^:", color="#9467bd", label="ID Error")
-    ax2b.plot(lambdas_b, ood_error_b, "v:", color="#ff7f0e", label="OOD Error")
-    # ax2b.plot(lambdas_b, test_error_b - train_error_b, "h--", color="#17becf", label="gap")
-
-    ax2b.set_ylabel("Error", color="#333333", fontsize=label_fs)
-    ax2b.tick_params(axis="y", labelcolor="#333333", labelsize=tick_fs)
-    ax2b.legend(loc="upper right", fontsize=legend_fs)
-    if err_min is not None and err_max is not None:
-        ax2b.set_ylim(err_min, err_max)
+        padding = 0.05 * (err_max - err_min) if err_max > err_min else 0.02
+        ax.set_ylim(err_min - padding, err_max + padding)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)

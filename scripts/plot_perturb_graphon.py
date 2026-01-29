@@ -48,45 +48,41 @@ def plot_perturb_graphon(results: List[Dict], output_path: Path, title: str = ""
     if not results:
         raise SystemExit("No perturb_graphon results found.")
 
-    # Extract data
-    perturb_levels = [r["perturb_level"] for r in results]
-    avg_l2_distances = [r["avg_l2_distance"] for r in results]
-    test_errors = [r["test_error"] for r in results]
-    id_errors = [r["id_error"] for r in results]
-    ood_errors = [r["ood_error"] for r in results]
-    train_errors = [r["train_error"] for r in results]
+    # Sort by actual L2 distance for x-axis order
+    sorted_results = sorted(results, key=lambda r: r["avg_l2_distance"])
 
-    # Create x-axis labels: "level (L2=0.xxx)"
-    x_labels = [
-        f"{level:.1f}\n(L2={l2:.3f})"
-        for level, l2 in zip(perturb_levels, avg_l2_distances)
-    ]
+    # Extract data
+    perturb_levels = [r["perturb_level"] for r in sorted_results]
+    avg_l2_distances = [r["avg_l2_distance"] for r in sorted_results]
+    test_errors = [r["test_error"] for r in sorted_results]
+    id_errors = [r["id_error"] for r in sorted_results]
+    ood_errors = [r["ood_error"] for r in sorted_results]
+    train_errors = [r["train_error"] for r in sorted_results]
 
     label_fs = 22
     tick_fs = 20
     legend_fs = 20
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     x = np.arange(len(perturb_levels))
-    width = 0.6
 
     # Plot lines
     ax.plot(x, test_errors, "s-", color="#d62728", label="Test Error", linewidth=2, markersize=8)
-    ax.plot(x, id_errors, "^--", color="#2ca02c", label="ID Error (Original)", linewidth=1.5, markersize=7)
-    ax.plot(x, ood_errors, "v--", color="#ff7f0e", label="OOD Error (Perturbed)", linewidth=1.5, markersize=7)
-    ax.axhline(
-        y=train_errors[0],
-        color="#1f77b4",
-        linestyle=":",
-        label=f"Train Error ({train_errors[0]:.3f})",
-        linewidth=1.5,
-    )
+    ax.plot(x, id_errors, "^--", color="#2ca02c", label="IG Error", linewidth=1.5, markersize=7)
+    ax.plot(x, ood_errors, "v--", color="#ff7f0e", label="OOG Error", linewidth=1.5, markersize=7)
+    # ax.axhline(
+    #     y=train_errors[0],
+    #     color="#1f77b4",
+    #     linestyle=":",
+    #     label=f"Train Error ({train_errors[0]:.3f})",
+    #     linewidth=1.5,
+    # )
 
-    ax.set_xlabel("Perturbation Level (avg L2 distance)", fontsize=label_fs)
+    ax.set_xlabel("Perturbation Level", fontsize=label_fs)
     ax.set_ylabel("Error", fontsize=label_fs)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=tick_fs)
+    ax.set_xticklabels([str(i) for i in range(len(x))], fontsize=tick_fs)
     ax.tick_params(axis="y", labelsize=tick_fs)
     ax.legend(loc="upper left", fontsize=legend_fs)
     ax.grid(True, alpha=0.3)
@@ -113,14 +109,15 @@ def plot_multi_lambda(
     tick_fs = 20
     legend_fs = 20
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     colors = plt.cm.viridis(np.linspace(0, 1, len(results_by_lambda)))
 
     for (lambda_mix, results), color in zip(sorted(results_by_lambda.items()), colors):
-        perturb_levels = [r["perturb_level"] for r in results]
-        avg_l2_distances = [r["avg_l2_distance"] for r in results]
-        test_errors = [r["test_error"] for r in results]
+        sorted_results = sorted(results, key=lambda r: r["avg_l2_distance"])
+        perturb_levels = [r["perturb_level"] for r in sorted_results]
+        avg_l2_distances = [r["avg_l2_distance"] for r in sorted_results]
+        test_errors = [r["test_error"] for r in sorted_results]
 
         # Create x-axis values
         x = np.arange(len(perturb_levels))
@@ -136,19 +133,14 @@ def plot_multi_lambda(
         )
 
     # Use first result set for x-axis labels
-    first_results = list(results_by_lambda.values())[0]
+    first_results = sorted(list(results_by_lambda.values())[0], key=lambda r: r["avg_l2_distance"])
     perturb_levels = [r["perturb_level"] for r in first_results]
-    avg_l2_distances = [r["avg_l2_distance"] for r in first_results]
-    x_labels = [
-        f"{level:.1f}\n(L2={l2:.3f})"
-        for level, l2 in zip(perturb_levels, avg_l2_distances)
-    ]
 
     x = np.arange(len(perturb_levels))
-    ax.set_xlabel("Perturbation Level (avg L2 distance)", fontsize=label_fs)
+    ax.set_xlabel("Perturbation Level", fontsize=label_fs)
     ax.set_ylabel("Test Error", fontsize=label_fs)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=tick_fs)
+    ax.set_xticklabels([str(i) for i in range(len(x))], fontsize=tick_fs)
     ax.tick_params(axis="y", labelsize=tick_fs)
     ax.legend(loc="upper left", fontsize=legend_fs)
     ax.grid(True, alpha=0.3)
