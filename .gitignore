@@ -10,7 +10,7 @@ runs/
 .venv
 .cache/
 .claude
-*.md
+
 *.png
 .vscode/
 data/
