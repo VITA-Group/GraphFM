@@ -7,7 +7,6 @@
 
 A Graph Foundation Model pipeline for studying graph neural network generalization through graphons and positional encoding strategies. The codebase implements an end-to-end error decomposition for cross-domain transfer (sampling error, graphon mismatch, and PE stability) and provides controlled experimental tooling for size shift, graphon-guided merging, and PE sweeps.
 
-**Key deviation from paper**: Uses graphon values W(u_i, u_j) directly as weighted adjacency matrix rather than Bernoulli edge sampling (where u_i ~ Uniform(0,1)).
 
 ## Installation
 
